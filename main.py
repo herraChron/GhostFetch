@@ -7,6 +7,7 @@ import shutil
 import psutil
 import asyncio
 import logging
+import httpx
 from time import time
 from datetime import datetime
 
@@ -17,7 +18,6 @@ from pyrogram.errors import FloodWait, PeerIdInvalid, BadRequest, MessageNotModi
 from pyrogram.types import (
     Message, CallbackQuery,
     InlineKeyboardMarkup, InlineKeyboardButton,
-    BotCommand,
 )
 from config import PyroConf
 
@@ -33,20 +33,20 @@ LOG_FILE         = "session.log"
 BOT_START_TIME   = time()
 
 # UI Constants
-BORDER = "━━━━━━━━━━━━━━━━━━━━━━━"
+BORDER    = "━━━━━━━━━━━━━━━━━━━━━━━"
 SEPARATOR = "──────────────────────"
-ICON_DL = "📥"
-ICON_FOLDER = "📂"
-ICON_HELP = "📖"
-ICON_STATS = "📊"
+ICON_DL      = "📥"
+ICON_FOLDER  = "📂"
+ICON_HELP    = "📖"
+ICON_STATS   = "📊"
 ICON_SUCCESS = "✅"
-ICON_ERROR = "❌"
-ICON_WARN = "⚠️"
-ICON_INFO = "ℹ️"
-ICON_CLOCK = "⏱"
-ICON_DELETE = "🗑"
+ICON_ERROR   = "❌"
+ICON_WARN    = "⚠️"
+ICON_INFO    = "ℹ️"
+ICON_CLOCK   = "⏱"
+ICON_DELETE  = "🗑"
 ARROW = "▶"
-DOT = "•"
+DOT   = "•"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -65,7 +65,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
-# ════════════════════════════════════════════════════════��══════
+# ═══════════════════════════════════════════════════════════════
 # Pyrogram clients
 # ═══════════════════════════════════════════════════════════════
 
@@ -147,7 +147,7 @@ def _folder_title(folder_id: str) -> str:
 
 # ═══════════════════════════════════════════════════════════════
 # Formatting helpers
-# ══════════════════════════════���════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
 
 def _sz(b: int | float) -> str:
     """Human-readable byte size."""
@@ -195,7 +195,7 @@ def _file_emoji(filename: str) -> str:
         ".apk": "📱", ".xapk": "📱", ".apks": "📱",
         ".exe": "🧩", ".msi": "🧩", ".dmg": "🧩", ".deb": "🧩",
         ".rpm": "🧩",
-        ".webm": "🎭", ".tgs": "🎭",
+        ".tgs": "🎭",
     }.get(ext, "📄")
 
 
@@ -989,13 +989,16 @@ async def cmd_log(_, message: Message):
 
 
 async def cmd_stats(_, message: Message):
-    dl_root = DOWNLOAD_BASE if os.path.exists(DOWNLOAD_BASE) else "."
-    total, used, free = shutil.disk_usage(dl_root)
-    net  = psutil.net_io_counters()
-    proc = psutil.Process(os.getpid())
-    cpu  = psutil.cpu_percent(interval=0.5)
-    ram  = psutil.virtual_memory().percent
-    disk = psutil.disk_usage(dl_root).percent
+    try:
+        dl_root = DOWNLOAD_BASE if os.path.exists(DOWNLOAD_BASE) else "."
+        total, used, free = shutil.disk_usage(dl_root)
+        net  = psutil.net_io_counters()
+        proc = psutil.Process(os.getpid())
+        cpu  = await asyncio.to_thread(psutil.cpu_percent, interval=0.5)
+        ram  = psutil.virtual_memory().percent
+        disk = psutil.disk_usage(dl_root).percent
+    except Exception as e:
+        return await message.reply(f"{ICON_WARN} Stats unavailable: `{e}`")
 
     chat_line = (
         f"`{selected_chat['title']}`"
@@ -1056,9 +1059,7 @@ async def handle_text(_, message: Message):
             "Send message IDs only (space-separated)"
         )
     if not msg_ids:
-        return await message.reply(
-            "Send at least one message ID"
-        )
+        return await message.reply("Send at least one message ID")
 
     entries = [{"id": mid, "status": "queued"} for mid in msg_ids]
 
@@ -1135,7 +1136,7 @@ async def cb_page(_, query: CallbackQuery):
 
 
 async def cb_open_files_from_job(_, query: CallbackQuery):
-    """Open files from job."""
+    """Open files from job summary button."""
     uid       = query.from_user.id
     folder_id = query.data.split(":")[1]
     folders   = _scan_folders()
@@ -1149,21 +1150,32 @@ async def cb_open_files_from_job(_, query: CallbackQuery):
 
 
 # ═══════════════════════════════════════════════════════════════
-# Bot command menu
+# Bot command menu — uses Bot API directly so commands appear
+# in the "/" menu inside the chat, not just in BotFather
 # ═══════════════════════════════════════════════════════════════
 
 async def _set_bot_commands() -> None:
-    """Register commands."""
-    await bot.set_bot_commands([
-        BotCommand("start",   "Start new session"),
-        BotCommand("setchat", "Change chat"),
-        BotCommand("files",   "Browse downloads"),
-        BotCommand("killall", "Stop all downloads"),
-        BotCommand("stats",   "System stats"),
-        BotCommand("log",     "Session log"),
-        BotCommand("help",    "Help"),
-    ])
-    log.info("Commands registered")
+    url = f"https://api.telegram.org/bot{PyroConf.BOT_TOKEN}/setMyCommands"
+    payload = {
+        "commands": [
+            {"command": "start",   "description": "Start new session"},
+            {"command": "setchat", "description": "Change chat"},
+            {"command": "files",   "description": "Browse downloads"},
+            {"command": "killall", "description": "Stop all downloads"},
+            {"command": "stats",   "description": "System stats"},
+            {"command": "log",     "description": "Session log"},
+            {"command": "help",    "description": "Help"},
+        ]
+    }
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.post(url, json=payload)
+        if r.json().get("ok"):
+            log.info("Bot commands registered")
+        else:
+            log.warning(f"Command registration failed: {r.text}")
+    except Exception as e:
+        log.warning(f"Command registration error: {e}")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1211,19 +1223,19 @@ async def main() -> None:
         filters.private & filters.text
         & ~filters.command(["start", "setchat", "help", "killall", "log", "stats", "files"]),
     ))
-    bot.add_handler(CallbackQueryHandler(cb_select_chat,          filters.regex(r"^sc:\d+$")))
-    bot.add_handler(CallbackQueryHandler(cb_page,                 filters.regex(r"^pg:\d+")))
-    bot.add_handler(CallbackQueryHandler(cb_welcome,              filters.regex(r"^welcome:")))
-    bot.add_handler(CallbackQueryHandler(cb_open_files_from_job,  filters.regex(r"^openf:")))
-    bot.add_handler(CallbackQueryHandler(cb_open_folder,          filters.regex(r"^fd:\d+$")))
-    bot.add_handler(CallbackQueryHandler(cb_files_page,           filters.regex(r"^fp:\d+:\d+$")))
-    bot.add_handler(CallbackQueryHandler(cb_back_to_folders,      filters.regex(r"^fb$")))
-    bot.add_handler(CallbackQueryHandler(cb_send_file,            filters.regex(r"^fl:\d+:\d+$")))
-    bot.add_handler(CallbackQueryHandler(cb_delete_file,          filters.regex(r"^fdel:\d+:\d+$")))
-    bot.add_handler(CallbackQueryHandler(cb_delete_folder,        filters.regex(r"^fdeldir:\d+$")))
-    bot.add_handler(CallbackQueryHandler(cb_delete_folder_confirm,filters.regex(r"^fdeldirok:\d+$")))
-    bot.add_handler(CallbackQueryHandler(cb_wipe_all,             filters.regex(r"^fwipe$")))
-    bot.add_handler(CallbackQueryHandler(cb_wipe_all_confirm,     filters.regex(r"^fwipeok$")))
+    bot.add_handler(CallbackQueryHandler(cb_select_chat,           filters.regex(r"^sc:\d+$")))
+    bot.add_handler(CallbackQueryHandler(cb_page,                  filters.regex(r"^pg:\d+")))
+    bot.add_handler(CallbackQueryHandler(cb_welcome,               filters.regex(r"^welcome:")))
+    bot.add_handler(CallbackQueryHandler(cb_open_files_from_job,   filters.regex(r"^openf:")))
+    bot.add_handler(CallbackQueryHandler(cb_open_folder,           filters.regex(r"^fd:\d+$")))
+    bot.add_handler(CallbackQueryHandler(cb_files_page,            filters.regex(r"^fp:\d+:\d+$")))
+    bot.add_handler(CallbackQueryHandler(cb_back_to_folders,       filters.regex(r"^fb$")))
+    bot.add_handler(CallbackQueryHandler(cb_send_file,             filters.regex(r"^fl:\d+:\d+$")))
+    bot.add_handler(CallbackQueryHandler(cb_delete_file,           filters.regex(r"^fdel:\d+:\d+$")))
+    bot.add_handler(CallbackQueryHandler(cb_delete_folder,         filters.regex(r"^fdeldir:\d+$")))
+    bot.add_handler(CallbackQueryHandler(cb_delete_folder_confirm, filters.regex(r"^fdeldirok:\d+$")))
+    bot.add_handler(CallbackQueryHandler(cb_wipe_all,              filters.regex(r"^fwipe$")))
+    bot.add_handler(CallbackQueryHandler(cb_wipe_all_confirm,      filters.regex(r"^fwipeok$")))
 
     await _initialize()
     await bot.start()
