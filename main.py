@@ -25,19 +25,10 @@ from config import PyroConf
 # Constants & paths
 # ═══════════════════════════════════════════════════════════════
 
-DEFAULT_DOWNLOAD_BASE = "/data/data/com.termux/files/home/GhostFetch/downloads"
-SESSION_FILE          = "session.json"
-PATH_FILE             = "path.json"
-LOG_FILE              = "session.log"
-BOT_START_TIME        = time()
-
-PATH_PRESETS = {
-    "termux":   "/data/data/com.termux/files/home/GhostFetch/downloads",
-    "internal": "/storage/emulated/0/Download/GhostFetch/downloads",
-}
-
-# Loaded at startup from path.json, falls back to DEFAULT_DOWNLOAD_BASE
-DOWNLOAD_BASE = DEFAULT_DOWNLOAD_BASE
+DOWNLOAD_BASE  = "/data/data/com.termux/files/home/GhostFetch/downloads"
+SESSION_FILE   = "session.json"
+LOG_FILE       = "session.log"
+BOT_START_TIME = time()
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -81,7 +72,6 @@ _job_queue:   list               = []   # pending jobs (dicts), processed in ord
 _current_job: dict | None        = None # the job currently being downloaded
 _worker_task: asyncio.Task | None = None
 
-user_setpath_state: dict = {}  # uid → "waiting_custom"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -111,51 +101,6 @@ def _save_session() -> None:
         log.error(f"Session save failed: {e}")
 
 
-def _load_path() -> None:
-    global DOWNLOAD_BASE
-    try:
-        with open(PATH_FILE, encoding="utf-8") as f:
-            data = json.load(f)
-        if data.get("path"):
-            DOWNLOAD_BASE = data["path"]
-            log.info(f"Loaded download path: {DOWNLOAD_BASE}")
-    except FileNotFoundError:
-        DOWNLOAD_BASE = DEFAULT_DOWNLOAD_BASE
-    except Exception as e:
-        log.warning(f"Path load failed: {e}")
-        DOWNLOAD_BASE = DEFAULT_DOWNLOAD_BASE
-
-
-def _save_path_config(path: str) -> None:
-    global DOWNLOAD_BASE
-    DOWNLOAD_BASE = path
-    try:
-        with open(PATH_FILE, "w", encoding="utf-8") as f:
-            json.dump({"path": path}, f, indent=2)
-    except Exception as e:
-        log.error(f"Path save failed: {e}")
-
-
-def _try_makedirs(path: str) -> tuple[bool, str]:
-    """
-    Attempt to create a directory path. Returns (success, error_message).
-    On failure, the path is NOT saved — callers should check before persisting.
-    """
-    try:
-        os.makedirs(path, exist_ok=True)
-        return True, ""
-    except OSError as e:
-        msg = str(e)
-        if e.errno == 13:   # EACCES — permission denied
-            hint = "Permission denied. Run `termux-setup-storage` in Termux and try again."
-        elif e.errno == 14: # EFAULT — bad address (no storage permission on Android)
-            hint = "Storage not accessible. Run `termux-setup-storage` in Termux and try again."
-        elif e.errno == 30: # EROFS — read-only filesystem
-            hint = "That filesystem is read-only."
-        else:
-            hint = msg
-        log.warning(f"makedirs failed for {path!r}: {msg}")
-        return False, hint
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -615,7 +560,6 @@ async def cmd_help(_, message: Message):
         "**Commands**\n"
         "/start — reset session & pick a new chat\n"
         "/setchat — change the active chat without resetting\n"
-        "/setpath — change the download folder\n"
         "/killall — cancel the running download & clear queue\n"
         "/stats — show disk, CPU, RAM & network usage\n"
         "/log — send the current session log file\n"
@@ -633,60 +577,127 @@ async def cmd_help(_, message: Message):
         "• Use ⬅️ / ➡️ to page through them\n"
         "• Or just type part of a name to filter the list\n\n"
         "**Files are saved to:**\n"
-        f"`{DOWNLOAD_BASE}/<chat_id>/`",
+        f"`{DOWNLOAD_BASE}/<chat_id>/`\n\n"
+        "Use /files to browse and re-send any downloaded file.",
         disable_web_page_preview=True,
     )
 
 
-async def cmd_setpath(_, message: Message):
-    uid = message.from_user.id
-    user_setpath_state.pop(uid, None)
-    markup = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📱 Internal Downloads", callback_data="path:internal")],
-        [InlineKeyboardButton("🖥 Termux Home",        callback_data="path:termux")],
-        [InlineKeyboardButton("✏️ Custom path",        callback_data="path:custom")],
-    ])
-    await message.reply(
-        "📁 **Choose a download location:**\n\n"
-        f"📱 Internal Downloads:\n`{PATH_PRESETS['internal']}`\n\n"
-        f"🖥 Termux Home:\n`{PATH_PRESETS['termux']}`\n\n"
-        "⚠️ _Internal Downloads requires storage permission.\n"
-        "Run `termux-setup-storage` in Termux if you haven't already._\n\n"
-        f"_Current: `{DOWNLOAD_BASE}`_",
-        reply_markup=markup,
+# ═══════════════════════════════════════════════════════════════
+# /files — browse downloads and send files back to chat
+# ═══════════════════════════════════════════════════════════════
+
+FILES_PAGE_SIZE = 8
+
+
+def _scan_downloads() -> list[dict]:
+    """
+    Walk DOWNLOAD_BASE and return a flat list of files sorted by modification
+    time (newest first). Each entry: {path, name, size, folder}.
+    """
+    results = []
+    if not os.path.exists(DOWNLOAD_BASE):
+        return results
+    for chat_dir in sorted(os.listdir(DOWNLOAD_BASE)):
+        full_dir = os.path.join(DOWNLOAD_BASE, chat_dir)
+        if not os.path.isdir(full_dir):
+            continue
+        for fname in os.listdir(full_dir):
+            fpath = os.path.join(full_dir, fname)
+            if os.path.isfile(fpath):
+                results.append({
+                    "path":   fpath,
+                    "name":   fname,
+                    "size":   os.path.getsize(fpath),
+                    "folder": chat_dir,
+                })
+    results.sort(key=lambda x: os.path.getmtime(x["path"]), reverse=True)
+    return results
+
+
+# per-user file list cache  uid → [file_entry, ...]
+_files_cache: dict = {}
+
+
+def _files_markup(files: list, page: int) -> tuple[str, InlineKeyboardMarkup]:
+    total       = len(files)
+    total_pages = max(1, -(-total // FILES_PAGE_SIZE))
+    start       = page * FILES_PAGE_SIZE
+    page_items  = files[start : start + FILES_PAGE_SIZE]
+
+    buttons = []
+    for i, f in enumerate(page_items):
+        label = f"📄 {f['name']}  ({_sz(f['size'])})"
+        buttons.append([InlineKeyboardButton(label, callback_data=f"fl:{start + i}")])
+
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"fp:{page - 1}"))
+    if start + FILES_PAGE_SIZE < total:
+        nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"fp:{page + 1}"))
+    if nav:
+        buttons.append(nav)
+
+    header = (
+        f"🗂 **Downloads** — {total} file(s)\n"
+        f"_Page {page + 1}/{total_pages} · tap a file to receive it_\n"
+        "━━━━━━━━━━━━━━━━━━━━━━"
     )
+    return header, InlineKeyboardMarkup(buttons)
 
 
-async def cb_setpath(_, query: CallbackQuery):
-    uid    = query.from_user.id
-    choice = query.data.split(":")[1]
+async def cmd_files(_, message: Message):
+    uid   = message.from_user.id
+    files = _scan_downloads()
 
-    if choice == "custom":
-        user_setpath_state[uid] = "waiting_custom"
-        await query.message.edit(
-            "✏️ **Send me the full path you want to use.**\n\n"
-            "_Example: `/sdcard/MyFolder/GhostFetch`_"
+    if not files:
+        return await message.reply(
+            "📭 No downloaded files found.\n\n"
+            f"Files land in `{DOWNLOAD_BASE}` after a download job completes."
         )
-        await query.answer()
+
+    _files_cache[uid] = files
+    text, markup = _files_markup(files, page=0)
+    await message.reply(text, reply_markup=markup)
+
+
+async def cb_files_page(_, query: CallbackQuery):
+    """Paginate the file list."""
+    uid  = query.from_user.id
+    page = int(query.data.split(":")[1])
+
+    files = _files_cache.get(uid)
+    if not files:
+        await query.answer("List expired. Run /files again.", show_alert=True)
         return
 
-    path = PATH_PRESETS[choice]
-    ok, err = _try_makedirs(path)
-    if not ok:
-        await query.message.edit(
-            f"❌ **Cannot access that path:**\n\n`{err}`\n\n"
-            "Use /setpath to choose a different location."
-        )
-        await query.answer("❌ Path not accessible")
-        log.warning(f"setpath failed for preset {choice!r}: {err}")
+    text, markup = _files_markup(files, page)
+    await query.message.edit(text, reply_markup=markup)
+    await query.answer()
+
+
+async def cb_send_file(_, query: CallbackQuery):
+    """Send the selected file back to the user."""
+    uid = query.from_user.id
+    idx = int(query.data.split(":")[1])
+
+    files = _files_cache.get(uid)
+    if not files or idx >= len(files):
+        await query.answer("File list expired. Run /files again.", show_alert=True)
         return
 
-    _save_path_config(path)
-    await query.message.edit(
-        f"✅ **Download path set!**\n\n`{path}`"
+    entry = files[idx]
+    path  = entry["path"]
+
+    if not os.path.exists(path):
+        await query.answer("File no longer exists on disk.", show_alert=True)
+        return
+
+    await query.answer("📤 Sending…")
+    await query.message.reply_document(
+        path,
+        caption=f"📄 `{entry['name']}`\n📁 `{entry['folder']}`\n💾 {_sz(entry['size'])}",
     )
-    await query.answer("✅ Path updated!")
-    log.info(f"Download path set to: {path}")
 
 
 async def cmd_killall(_, message: Message):
@@ -757,20 +768,6 @@ async def handle_text(_, message: Message):
     uid   = message.from_user.id
     text  = message.text.strip()
     state = user_state.get(uid, "idle")
-
-    # ── State: waiting for custom path ────────────────────────
-    if user_setpath_state.get(uid) == "waiting_custom":
-        user_setpath_state.pop(uid)
-        if not text.startswith("/"):
-            return await message.reply("⚠️ Path must start with `/`. Try again with /setpath.")
-        ok, err = _try_makedirs(text)
-        if not ok:
-            return await message.reply(
-                f"❌ **Cannot create that path:**\n\n`{err}`\n\n"
-                "Try a different path or use /setpath to pick a preset."
-            )
-        _save_path_config(text)
-        return await message.reply(f"✅ **Download path set!**\n\n`{text}`")
 
     # ── State: selecting a chat — filter the list ──────────────
     if state == "selecting":
@@ -893,15 +890,7 @@ async def cb_page(_, query: CallbackQuery):
 
 async def _initialize() -> None:
     _load_session()
-    _load_path()
-    ok, err = _try_makedirs(DOWNLOAD_BASE)
-    if not ok:
-        log.warning(
-            f"Saved path {DOWNLOAD_BASE!r} is not accessible ({err}). "
-            "Falling back to Termux home and resetting path.json."
-        )
-        _save_path_config(DEFAULT_DOWNLOAD_BASE)
-        os.makedirs(DOWNLOAD_BASE, exist_ok=True)   # Termux home always works
+    os.makedirs(DOWNLOAD_BASE, exist_ok=True)
     log.info("Starting user client…")
     await user_client.start()
     await _load_dialogs()
@@ -935,18 +924,19 @@ async def main() -> None:
     bot.add_handler(MessageHandler(cmd_start,   filters.command("start")   & filters.private))
     bot.add_handler(MessageHandler(cmd_setchat, filters.command("setchat") & filters.private))
     bot.add_handler(MessageHandler(cmd_help,    filters.command("help")    & filters.private))
+    bot.add_handler(MessageHandler(cmd_files,   filters.command("files")   & filters.private))
     bot.add_handler(MessageHandler(cmd_killall, filters.command("killall") & filters.private))
     bot.add_handler(MessageHandler(cmd_log,     filters.command("log")     & filters.private))
     bot.add_handler(MessageHandler(cmd_stats,   filters.command("stats")   & filters.private))
-    bot.add_handler(MessageHandler(cmd_setpath, filters.command("setpath") & filters.private))
     bot.add_handler(MessageHandler(
         handle_text,
         filters.private & filters.text
-        & ~filters.command(["start", "setchat", "help", "killall", "log", "stats", "setpath"]),
+        & ~filters.command(["start", "setchat", "help", "killall", "log", "stats", "files"]),
     ))
     bot.add_handler(CallbackQueryHandler(cb_select_chat, filters.regex(r"^sc:\d+$")))
     bot.add_handler(CallbackQueryHandler(cb_page,        filters.regex(r"^pg:\d+")))
-    bot.add_handler(CallbackQueryHandler(cb_setpath,     filters.regex(r"^path:")))
+    bot.add_handler(CallbackQueryHandler(cb_files_page,  filters.regex(r"^fp:\d+")))
+    bot.add_handler(CallbackQueryHandler(cb_send_file,   filters.regex(r"^fl:\d+$")))
 
     await _initialize()
     await bot.start()
