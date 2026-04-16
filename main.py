@@ -32,9 +32,25 @@ CHAT_NAMES_FILE  = "chat_names.json"
 LOG_FILE         = "session.log"
 BOT_START_TIME   = time()
 
+# UI Constants
+BORDER = "━━━━━━━━━━━━━━━━━━━━━━━"
+SEPARATOR = "──────────────────────"
+ICON_DL = "📥"
+ICON_FOLDER = "📂"
+ICON_HELP = "📖"
+ICON_STATS = "📊"
+ICON_SUCCESS = "✅"
+ICON_ERROR = "❌"
+ICON_WARN = "⚠️"
+ICON_INFO = "ℹ️"
+ICON_CLOCK = "⏱"
+ICON_DELETE = "🗑"
+ARROW = "▶"
+DOT = "•"
+
 
 # ═══════════════════════════════════════════════════════════════
-# Logging  (fresh file each run, also prints to console)
+# Logging
 # ═══════════════════════════════════════════════════════════════
 
 logging.basicConfig(
@@ -49,13 +65,10 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
-# ═══════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════��══════
 # Pyrogram clients
 # ═══════════════════════════════════════════════════════════════
 
-# Clients are initialized inside main() so they bind to the correct event loop.
-# Creating them at module level causes "Future attached to a different loop"
-# on Python 3.10+ because Pyrogram grabs the loop at construction time.
 bot         = None
 user_client = None
 
@@ -64,18 +77,17 @@ user_client = None
 # Global state
 # ═══════════════════════════════════════════════════════════════
 
-dialogs_cache:  list        = []    # [{id, title, type}] — loaded once at startup
-selected_chat:  dict        = {}    # {"id": .., "title": ..} — persisted to disk
-downloaded_ids: set         = set() # cleared on /start (in-memory dedup)
-user_state:     dict        = {}    # uid → "idle" | "selecting"
-search_results: dict        = {}    # uid → [dialog, …]  (temp, per search)
+dialogs_cache:  list        = []
+selected_chat:  dict        = {}
+downloaded_ids: set         = set()
+user_state:     dict        = {}
+search_results: dict        = {}
 
-_job_queue:   list               = []   # pending jobs (dicts), processed in order
-_current_job: dict | None        = None # the job currently being downloaded
+_job_queue:   list               = []
+_current_job: dict | None        = None
 _worker_task: asyncio.Task | None = None
 
-_files_nav:   dict               = {}   # uid → nav state for /files browser
-
+_files_nav:   dict               = {}
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -105,8 +117,6 @@ def _save_session() -> None:
         log.error(f"Session save failed: {e}")
 
 
-# ── Chat name registry (folder_id → human title) ──────────────
-
 def _load_chat_names() -> dict:
     try:
         with open(CHAT_NAMES_FILE, encoding="utf-8") as f:
@@ -135,11 +145,9 @@ def _folder_title(folder_id: str) -> str:
     return _load_chat_names().get(folder_id, folder_id)
 
 
-
-
 # ═══════════════════════════════════════════════════════════════
 # Formatting helpers
-# ═══════════════════════════════════════════════════════════════
+# ══════════════════════════════���════════════════════════════════
 
 def _sz(b: int | float) -> str:
     """Human-readable byte size."""
@@ -162,7 +170,7 @@ def _elapsed(start: float) -> str:
     return f"{h}h {m:02d}m"
 
 
-def _bar(pct: float, width: int = 10) -> str:
+def _bar(pct: float, width: int = 12) -> str:
     """Text progress bar."""
     n = round(width * pct / 100)
     return "█" * n + "░" * (width - n)
@@ -172,31 +180,21 @@ def _file_emoji(filename: str) -> str:
     """Return an emoji that matches the file's extension."""
     ext = os.path.splitext(filename)[1].lower()
     return {
-        # images
         ".jpg": "🖼", ".jpeg": "🖼", ".png": "🖼", ".gif": "🖼",
         ".webp": "🖼", ".bmp": "🖼", ".tiff": "🖼", ".heic": "🖼",
-        # video
         ".mp4": "🎬", ".mkv": "🎬", ".avi": "🎬", ".mov": "🎬",
         ".webm": "🎬", ".flv": "🎬", ".ts": "🎬", ".m4v": "🎬",
-        # audio
         ".mp3": "🎵", ".ogg": "🎵", ".flac": "🎵", ".wav": "🎵",
         ".m4a": "🎵", ".aac": "🎵", ".opus": "🎵",
-        # archives
         ".zip": "🗜", ".rar": "🗜", ".7z": "🗜", ".tar": "🗜",
         ".gz": "🗜", ".xz": "🗜", ".bz2": "🗜",
-        # ebooks / documents
         ".pdf": "📕", ".epub": "📕", ".mobi": "📕", ".djvu": "📕",
-        # text / markup
         ".txt": "📝", ".md": "📝", ".log": "📝", ".srt": "📝",
         ".ass": "📝", ".sub": "📝",
-        # spreadsheets / data
         ".xlsx": "📊", ".xls": "📊", ".csv": "📊", ".ods": "📊",
-        # apps / packages
         ".apk": "📱", ".xapk": "📱", ".apks": "📱",
-        # executables / installers
         ".exe": "🧩", ".msi": "🧩", ".dmg": "🧩", ".deb": "🧩",
         ".rpm": "🧩",
-        # stickers
         ".webm": "🎭", ".tgs": "🎭",
     }.get(ext, "📄")
 
@@ -221,28 +219,27 @@ def _render_entry(e: dict) -> str:
     if e["status"] == "done":
         name  = e.get("name", "?")
         emoji = _file_emoji(name)
-        return f"{emoji} {mid} — {name} · **{_sz(e.get('size', 0))}**"
+        return f"{emoji} {mid} {DOT} {name} **({_sz(e.get('size', 0))})**"
 
     if e["status"] == "downloading":
         pct  = e.get("pct", 0)
         name = e.get("name", "…")
-        return f"{icon} {mid} — {name}\n    `[{_bar(pct)}]` **{pct:.0f}%**"
+        return f"{icon} {mid} {DOT} {name}\n    `[{_bar(pct)}]` **{pct:.0f}%**"
 
     if e["status"] in ("skipped", "failed"):
-        return f"{icon} {mid} — _{e.get('reason', '')}_"
+        return f"{icon} {mid} {DOT} {e.get('reason', '')}"
 
-    # queued
     return f"{icon} {mid}"
 
 
 def _render_job(job: dict) -> str:
     header = (
-        f"📥 **Download** · {len(job['ids'])} ID(s)\n"
-        f"📂 `{job['chat_title']}`\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{ICON_DL} **Download Session**\n"
+        f"{ICON_FOLDER} `{job['chat_title']}`\n"
+        f"{BORDER}\n"
     )
     rows   = "\n".join(_render_entry(e) for e in job["entries"])
-    footer = f"\n\n⏱ `{_elapsed(job['start_time'])}`"
+    footer = f"\n\n{ICON_CLOCK} `{_elapsed(job['start_time'])}`"
     return header + rows + footer
 
 
@@ -328,11 +325,7 @@ async def _download_file(
     index: int,
     total: int,
 ) -> tuple[str, int]:
-    """
-    Download one media file.
-    Returns (filename, size_bytes).
-    Raises CancelledError if job is cancelled mid-download.
-    """
+    """Download one media file."""
     fname = _filename(msg)
     path  = _save_path(chat_id, fname)
     _last_update = [0.0]
@@ -341,7 +334,7 @@ async def _download_file(
         if job.get("cancelled"):
             raise asyncio.CancelledError()
         now = time()
-        if now - _last_update[0] < 1.5:   # throttle edits
+        if now - _last_update[0] < 1.5:
             return
         _last_update[0] = now
         pct  = (current / total_bytes * 100) if total_bytes else 0
@@ -358,21 +351,15 @@ async def _download_file(
 
 
 async def _process_id(msg_id: int, job: dict, entry: dict) -> None:
-    """
-    Fetch and download all media for one message ID.
-    Handles media groups, single files, and text-only messages.
-    Updates `entry` in-place throughout.
-    """
+    """Fetch and download all media for one message ID."""
     chat_id = selected_chat["id"]
     entry["status"] = "downloading"
 
-    # In-memory dedup (cleared on /start)
     if msg_id in downloaded_ids:
         entry["status"] = "skipped"
-        entry["reason"] = "Already downloaded this session"
+        entry["reason"] = "Already downloaded"
         return
 
-    # Fetch message with retry on FloodWait
     msg = None
     for attempt in range(3):
         try:
@@ -385,7 +372,7 @@ async def _process_id(msg_id: int, job: dict, entry: dict) -> None:
                 await asyncio.sleep(e.value + 1)
             else:
                 entry["status"] = "failed"
-                entry["reason"] = f"FloodWait {e.value}s, giving up"
+                entry["reason"] = f"FloodWait {e.value}s"
                 return
         except (PeerIdInvalid, BadRequest) as e:
             entry["status"] = "failed"
@@ -399,11 +386,10 @@ async def _process_id(msg_id: int, job: dict, entry: dict) -> None:
 
     if not msg or msg.empty:
         entry["status"] = "skipped"
-        entry["reason"] = "Message not found or deleted"
+        entry["reason"] = "Not found/deleted"
         return
 
     try:
-        # ── Media group (multiple files in one post) ──────────
         if msg.media_group_id:
             group       = await user_client.get_media_group(chat_id, msg_id)
             media_msgs  = [m for m in group if m.media]
@@ -423,16 +409,14 @@ async def _process_id(msg_id: int, job: dict, entry: dict) -> None:
             entry["name"] = f"{count} files" if count > 1 else last_name
             entry["size"] = total_size
 
-        # ── Single media file ─────────────────────────────────
         elif msg.media:
             fname, sz = await _download_file(msg, chat_id, job, entry, 0, 1)
             entry["name"] = fname
             entry["size"] = sz
 
-        # ── Text-only or empty ────────────────────────────────
         else:
             entry["status"] = "skipped"
-            entry["reason"] = "No downloadable media"
+            entry["reason"] = "No media"
             return
 
         downloaded_ids.add(msg_id)
@@ -452,16 +436,12 @@ async def _process_id(msg_id: int, job: dict, entry: dict) -> None:
 
 
 async def _run_job(job: dict) -> None:
-    """
-    Sequential worker — runs the given job, then drains _job_queue automatically.
-    Each job's progress message is updated live; a summary is posted when it finishes.
-    """
+    """Sequential worker — runs the given job."""
     global _current_job, _worker_task, _job_queue
 
     async def _execute(j: dict) -> None:
         global _current_job
         _current_job = j
-        # Record the chat title for the folder browser
         folder_id = str(selected_chat.get("id", "")).replace("-100", "")
         if folder_id and j.get("chat_title"):
             _save_chat_name(folder_id, j["chat_title"])
@@ -489,31 +469,29 @@ async def _run_job(job: dict) -> None:
             folder_id = str(selected_chat["id"]).replace("-100", "")
             folder    = os.path.join(DOWNLOAD_BASE, folder_id)
             queue_left = len(_job_queue)
-            next_note  = f"\n⏭ `{queue_left}` job(s) still queued" if queue_left else ""
+            next_note  = f"\n⏭ `{queue_left}` job(s) queued" if queue_left else ""
             summary = (
                 _render_job(j) + "\n\n"
-                "━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"✅ `{done}` done  ·  ⏭️ `{skipped}` skipped  ·  ❌ `{failed}` failed\n"
-                f"📁 `{folder}`" + next_note
+                f"{BORDER}\n"
+                f"✅ `{done}` done  {DOT}  ⏭️ `{skipped}` skipped  {DOT}  ❌ `{failed}` failed\n"
+                f"{ICON_FOLDER} `{folder}`" + next_note
             )
             open_files_markup = InlineKeyboardMarkup([[
-                InlineKeyboardButton("📂  Open Files", callback_data=f"openf:{folder_id}")
+                InlineKeyboardButton("📂 Open Files", callback_data=f"openf:{folder_id}")
             ]])
             await _edit(j["progress_msg"], summary, reply_markup=open_files_markup)
             log.info(f"Job finished — done={done} skipped={skipped} failed={failed}")
 
     try:
         await _execute(job)
-        # Drain the queue
         while _job_queue:
             next_job = _job_queue.pop(0)
             await _edit(next_job["progress_msg"],
-                        f"▶️ **Starting now…**\n📂 `{next_job['chat_title']}`\n"
+                        f"▶️ **Starting next…**\n{ICON_FOLDER} `{next_job['chat_title']}`\n"
                         + "\n".join(f"⏸ `{e['id']}`" for e in next_job["entries"]))
             await _execute(next_job)
 
     except asyncio.CancelledError:
-        # Mark all queued jobs as cancelled too
         for pending in _job_queue:
             for e in pending["entries"]:
                 e["status"] = "failed"
@@ -530,21 +508,21 @@ async def _run_job(job: dict) -> None:
 # Command handlers
 # ═══════════════════════════════════════════════════════════════
 
-PAGE_SIZE = 10   # dialogs per page
+PAGE_SIZE = 8
 
 
 def _dialog_list_markup(uid: int, page: int = 0, query: str = "") -> tuple[str, InlineKeyboardMarkup]:
-    """Build text + keyboard for a page of dialogs, optionally filtered by query."""
+    """Build text + keyboard for a page of dialogs."""
     pool = (
         [d for d in dialogs_cache if query.lower() in d["title"].lower()]
         if query else dialogs_cache
     )
-    search_results[uid] = pool          # store the filtered pool for cb_select_chat
+    search_results[uid] = pool
 
     total   = len(pool)
     start   = page * PAGE_SIZE
     page_items = pool[start : start + PAGE_SIZE]
-    total_pages = max(1, -(-total // PAGE_SIZE))   # ceil division
+    total_pages = max(1, -(-total // PAGE_SIZE))
 
     TYPE_ICON = {"group": "👥", "supergroup": "👥", "channel": "📢", "bot": "🤖", "private": "👤"}
     buttons = [
@@ -555,7 +533,6 @@ def _dialog_list_markup(uid: int, page: int = 0, query: str = "") -> tuple[str, 
         for i, d in enumerate(page_items)
     ]
 
-    # Pagination row
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"pg:{page-1}:{query}"))
@@ -565,18 +542,18 @@ def _dialog_list_markup(uid: int, page: int = 0, query: str = "") -> tuple[str, 
         buttons.append(nav)
 
     header = (
-        f"📋 **Select a chat** — {total} found"
-        + (f" for `{query}`" if query else "")
-        + f"\n_Page {page+1}/{total_pages} · or type a name to filter_\n"
-        "━━━━━━━━━━━━━━━━━━━━━━"
+        f"{ICON_FOLDER} **Select a Chat** {DOT} {total} found\n"
+        + (f"🔍 `{query}`\n" if query else "")
+        + f"{SEPARATOR}\n"
+        f"Page `{page+1}/{total_pages}` {DOT} Type to filter"
     )
     return header, InlineKeyboardMarkup(buttons)
 
 
 async def _show_dialog_list(target, uid: int, page: int = 0, query: str = "") -> None:
-    """Send (or edit) the dialog list. target can be a Message or CallbackQuery."""
+    """Send (or edit) the dialog list."""
     if not dialogs_cache:
-        text = "⚠️ No dialogs loaded yet. Please wait a moment and try again."
+        text = f"{ICON_WARN} No chats loaded yet. Please wait…"
         if hasattr(target, "reply"):
             await target.reply(text)
         else:
@@ -584,16 +561,15 @@ async def _show_dialog_list(target, uid: int, page: int = 0, query: str = "") ->
         return
 
     text, markup = _dialog_list_markup(uid, page, query)
-    if hasattr(target, "reply"):          # Message — send new
+    if hasattr(target, "reply"):
         await target.reply(text, reply_markup=markup)
-    else:                                  # CallbackQuery — edit existing
+    else:
         await target.message.edit(text, reply_markup=markup)
 
 
 async def cmd_start(_, message: Message):
     global downloaded_ids, _current_job, _worker_task, _job_queue
 
-    # Kill any running job and clear the queue
     if _worker_task and not _worker_task.done():
         if _current_job:
             _current_job["cancelled"] = True
@@ -603,25 +579,28 @@ async def cmd_start(_, message: Message):
     _job_queue.clear()
     downloaded_ids = set()
 
-    # Build welcome buttons
     buttons = []
     if selected_chat.get("id"):
         buttons.append([InlineKeyboardButton(
-            f"▶️  Continue — {selected_chat['title']}",
+            f"{ARROW} Continue {ARROW} {selected_chat['title']}",
             callback_data="welcome:resume",
         )])
     buttons.append([
-        InlineKeyboardButton("📂  Set Chat", callback_data="welcome:setchat"),
-        InlineKeyboardButton("❓  Help",     callback_data="welcome:help"),
+        InlineKeyboardButton("📂 Set Chat", callback_data="welcome:setchat"),
+        InlineKeyboardButton("❓ Help", callback_data="welcome:help"),
     ])
 
     await message.reply(
-        "👻 **GhostFetch**\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n"
-        "Download media from restricted Telegram chats "
-        "— channels, groups, bots — straight to your device.\n\n"
-        "Pick a source chat, send message IDs, done.\n\n"
-        "_by herraChron_",
+        "👻 **GhostFetch** >> Secure Media Downloader\n"
+        f"{BORDER}\n\n"
+        "🎯 **What can you do?**\n\n"
+        "✦ Download from any Telegram chat\n"
+        "✦ Auto-queue multiple downloads\n"
+        "✦ Browse & manage your files\n"
+        "✦ Fast & reliable\n\n"
+        "🚀 **Get Started**\n"
+        "Just pick a chat, send message IDs, and let us do the rest!\n\n"
+        "v1.0 by herraChron",
         reply_markup=InlineKeyboardMarkup(buttons),
         disable_web_page_preview=True,
     )
@@ -634,23 +613,23 @@ async def cmd_setchat(_, message: Message):
 
 
 async def cb_welcome(_, query: CallbackQuery):
-    """Handle the three buttons on the /start welcome screen."""
+    """Handle welcome buttons."""
     uid    = query.from_user.id
     action = query.data.split(":")[1]
 
     if action == "resume":
         if not selected_chat.get("id"):
-            await query.answer("No previous session found.", show_alert=True)
+            await query.answer("No previous session.", show_alert=True)
             return
         user_state[uid] = "idle"
         await query.message.edit(
-            f"✅ **Resumed**\n\n"
-            f"📂 **{selected_chat['title']}**\n"
+            f"{ICON_SUCCESS} **Session Resumed**\n\n"
+            f"{ICON_FOLDER} `{selected_chat['title']}`\n"
             f"🆔 `{selected_chat['id']}`\n\n"
-            "Ready. Send me message IDs.\n"
-            "_Example: `26473` or `26473 26570 26600`_"
+            "Send message IDs to download:\n"
+            "`26473` or `26473 26570`"
         )
-        await query.answer("✅ Session resumed")
+        await query.answer()
 
     elif action == "setchat":
         user_state[uid] = "selecting"
@@ -660,83 +639,53 @@ async def cb_welcome(_, query: CallbackQuery):
     elif action == "help":
         await query.answer()
         await query.message.edit(
-            "📖 **GhostFetch — Help**\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "**Getting started**\n"
-            "1. Send /start — pick a chat from the list\n"
-            "2. Send one or more message IDs to download\n"
-            "3. The bot downloads them and saves to your Termux storage\n\n"
+            f"{ICON_HELP} **GhostFetch Help**\n"
+            f"{BORDER}\n\n"
             "**Commands**\n"
-            "/start — reset session & pick a new chat\n"
-            "/setchat — change the active chat without resetting\n"
-            "/files — browse, receive, or delete downloaded files\n"
-            "/killall — cancel the running download & clear queue\n"
-            "/stats — show disk, CPU, RAM & network usage\n"
-            "/log — send the current session log file\n"
-            "/help — show this message\n\n"
-            "**Sending IDs**\n"
-            "• Single ID: `26473`\n"
-            "• Multiple IDs: `26473 26570 26600`\n"
-            "• While a download is running, new IDs are **queued** automatically\n\n"
-            "**Queue**\n"
-            "• Each batch of IDs you send becomes one job\n"
-            "• Jobs run one after another, automatically\n"
-            "• /killall cancels the current job and clears the entire queue\n\n"
-            "**Chat selection**\n"
-            "• After /start or /setchat, a full list of your chats appears\n"
-            "• Use ⬅️ / ➡️ to page through them\n"
-            "• Or just type part of a name to filter the list\n\n"
-            "**Files are saved to:**\n"
-            f"`{DOWNLOAD_BASE}/<chat_id>/`\n\n"
-            "Use /files to browse and re-send any downloaded file.",
+            f"/start {DOT} Reset session\n"
+            f"/setchat {DOT} Change chat\n"
+            f"/files {DOT} Browse downloads\n"
+            f"/stats {DOT} System stats\n"
+            f"/killall {DOT} Cancel all\n"
+            f"/help {DOT} Help\n\n"
+            "**How to Use**\n"
+            "1. /start\n"
+            "2. Pick a chat\n"
+            "3. Send message IDs\n\n"
+            f"📍 Files: `{DOWNLOAD_BASE}`",
             disable_web_page_preview=True,
         )
 
 
 async def cmd_help(_, message: Message):
     await message.reply(
-        "📖 **GhostFetch — Help**\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "**Getting started**\n"
-        "1. Send /start — pick a chat from the list\n"
-        "2. Send one or more message IDs to download\n"
-        "3. The bot downloads them and saves to your Termux storage\n\n"
+        f"{ICON_HELP} **GhostFetch Help**\n"
+        f"{BORDER}\n\n"
         "**Commands**\n"
-        "/start — reset session & pick a new chat\n"
-        "/setchat — change the active chat without resetting\n"
-        "/files — browse, receive, or delete downloaded files\n"
-        "/killall — cancel the running download & clear queue\n"
-        "/stats — show disk, CPU, RAM & network usage\n"
-        "/log — send the current session log file\n"
-        "/help — show this message\n\n"
-        "**Sending IDs**\n"
-        "• Single ID: `26473`\n"
-        "• Multiple IDs: `26473 26570 26600`\n"
-        "• While a download is running, new IDs are **queued** automatically\n\n"
-        "**Queue**\n"
-        "• Each batch of IDs you send becomes one job\n"
-        "• Jobs run one after another, automatically\n"
-        "• /killall cancels the current job and clears the entire queue\n\n"
-        "**Chat selection**\n"
-        "• After /start or /setchat, a full list of your chats appears\n"
-        "• Use ⬅️ / ➡️ to page through them\n"
-        "• Or just type part of a name to filter the list\n\n"
-        "**Files are saved to:**\n"
-        f"`{DOWNLOAD_BASE}/<chat_id>/`\n\n"
-        "Use /files to browse and re-send any downloaded file.",
+        f"/start {DOT} Reset session\n"
+        f"/setchat {DOT} Change chat\n"
+        f"/files {DOT} Browse downloads\n"
+        f"/stats {DOT} System stats\n"
+        f"/killall {DOT} Cancel all\n"
+        f"/help {DOT} Help\n\n"
+        "**How to Use**\n"
+        "1. /start\n"
+        "2. Pick a chat\n"
+        "3. Send message IDs\n\n"
+        f"📍 Files: `{DOWNLOAD_BASE}`",
         disable_web_page_preview=True,
     )
 
 
 # ═══════════════════════════════════════════════════════════════
-# /files — folder-first browser: folders → files → send / delete
+# /files — folder-first browser
 # ═══════════════════════════════════════════════════════════════
 
-FILES_PAGE_SIZE = 6
+FILES_PAGE_SIZE = 5
 
 
 def _scan_folders() -> list[dict]:
-    """Return sorted list of download folders with metadata."""
+    """Return sorted list of download folders."""
     result = []
     if not os.path.exists(DOWNLOAD_BASE):
         return result
@@ -757,7 +706,7 @@ def _scan_folders() -> list[dict]:
 
 
 def _scan_files_in(folder_path: str) -> list[dict]:
-    """Return files inside a folder, newest first."""
+    """Return files inside a folder."""
     files = []
     if not os.path.isdir(folder_path):
         return files
@@ -774,14 +723,13 @@ def _folders_markup(folders: list) -> tuple[str, InlineKeyboardMarkup]:
     total_size  = sum(f["total_size"] for f in folders)
     buttons = []
     for i, f in enumerate(folders):
-        label = f"📁  {f['title']}  ·  {f['file_count']} file(s)  ·  {_sz(f['total_size'])}"
+        label = f"📁 {f['title']} {DOT} {f['file_count']}f {DOT} {_sz(f['total_size'])}"
         buttons.append([InlineKeyboardButton(label, callback_data=f"fd:{i}")])
-    buttons.append([InlineKeyboardButton("🗑  Wipe ALL downloads", callback_data="fwipe")])
+    buttons.append([InlineKeyboardButton("🗑 Wipe All", callback_data="fwipe")])
     header = (
-        f"🗂  **Downloads**\n"
-        f"_{len(folders)} folder(s)  ·  {total_files} file(s)  ·  {_sz(total_size)}_\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n"
-        "_Tap a folder to browse_"
+        f"📂 **Downloads** {DOT} {len(folders)} folders\n"
+        f"📊 {total_files} files {DOT} {_sz(total_size)}\n"
+        f"{SEPARATOR}"
     )
     return header, InlineKeyboardMarkup(buttons)
 
@@ -795,37 +743,35 @@ def _folder_files_markup(folder: dict, fi: int, files: list, page: int) -> tuple
     buttons = []
     for i, f in enumerate(page_items):
         actual = start + i
-        short  = f["name"] if len(f["name"]) <= 28 else f["name"][:25] + "…"
+        short  = (f["name"][:48] + "…") if len(f["name"]) > 48 else f["name"]
         emoji  = _file_emoji(f["name"])
         buttons.append([
-            InlineKeyboardButton(f"{emoji}  {short}  ({_sz(f['size'])})", callback_data=f"fl:{fi}:{actual}"),
-            InlineKeyboardButton("🗑", callback_data=f"fdel:{fi}:{actual}"),
+            InlineKeyboardButton(f"{emoji} {short}", callback_data=f"fl:{fi}:{actual}"),
+            InlineKeyboardButton(f"🗑 {_sz(f['size'])}", callback_data=f"fdel:{fi}:{actual}"),
         ])
 
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton("⬅️", callback_data=f"fp:{fi}:{page - 1}"))
-    nav.append(InlineKeyboardButton("🔙  Back", callback_data="fb"))
+    nav.append(InlineKeyboardButton("🔙 Back", callback_data="fb"))
     if start + FILES_PAGE_SIZE < total:
         nav.append(InlineKeyboardButton("➡️", callback_data=f"fp:{fi}:{page + 1}"))
     buttons.append(nav)
-    buttons.append([InlineKeyboardButton(f"🗑  Delete entire folder", callback_data=f"fdeldir:{fi}")])
+    buttons.append([InlineKeyboardButton("🗑 Delete", callback_data=f"fdeldir:{fi}")])
 
     header = (
-        f"📁  **{folder['title']}**\n"
-        f"_{total} file(s)  ·  {_sz(folder['total_size'])}  ·  page {page + 1}/{total_pages}_\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n"
-        "_Tap name to receive · 🗑 to delete_"
+        f"📁 **{folder['title']}**\n"
+        f"📄 {total} files {DOT} {_sz(folder['total_size'])} {DOT} {page + 1}/{total_pages}"
     )
     return header, InlineKeyboardMarkup(buttons)
 
 
 async def _send_folder_view(target, uid: int) -> None:
-    """Send or edit the folder list. target = Message or CallbackQuery."""
+    """Send folder list."""
     folders = _scan_folders()
     _files_nav[uid] = {"view": "folders", "folders": folders}
     if not folders:
-        text = "📭  No downloads yet.\n\nFiles appear here after a download job finishes."
+        text = "📭 No downloads yet"
         if hasattr(target, "reply"):
             await target.reply(text)
         else:
@@ -839,23 +785,22 @@ async def _send_folder_view(target, uid: int) -> None:
 
 
 async def _send_file_view(target, uid: int, fi: int, page: int = 0, reply: bool = False) -> None:
-    """Send or edit the file list for folder index fi."""
+    """Send file list."""
     nav     = _files_nav.get(uid, {})
     folders = nav.get("folders") or _scan_folders()
     if fi >= len(folders):
         if hasattr(target, "answer"):
-            await target.answer("Folder gone. Run /files again.", show_alert=True)
+            await target.answer("Folder not found.", show_alert=True)
         return
     folder = folders[fi]
     files  = _scan_files_in(folder["path"])
-    # Refresh folder size/count after possible deletions
     folder["file_count"] = len(files)
     folder["total_size"] = sum(f["size"] for f in files)
     _files_nav[uid] = {"view": "files", "folders": folders, "fi": fi, "files": files, "page": page}
 
     if not files:
-        text   = f"📭  **{folder['title']}** is empty."
-        markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙  Back", callback_data="fb")]])
+        text   = f"📭 **{folder['title']}** is empty"
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="fb")]])
         if reply or hasattr(target, "reply"):
             await target.reply(text, reply_markup=markup)
         else:
@@ -874,7 +819,7 @@ async def cmd_files(_, message: Message):
 
 
 async def cb_open_folder(_, query: CallbackQuery):
-    """Tap a folder → show its files."""
+    """Tap a folder to show its files."""
     uid = query.from_user.id
     fi  = int(query.data.split(":")[1])
     await _send_file_view(query, uid, fi)
@@ -892,13 +837,13 @@ async def cb_files_page(_, query: CallbackQuery):
 
 
 async def cb_back_to_folders(_, query: CallbackQuery):
-    """🔙 Back → folder list."""
+    """Back to folder list."""
     await _send_folder_view(query, query.from_user.id)
     await query.answer()
 
 
 async def cb_send_file(_, query: CallbackQuery):
-    """Send the tapped file, then re-post the file list below it."""
+    """Send file."""
     uid   = query.from_user.id
     parts = query.data.split(":")
     fi    = int(parts[1])
@@ -907,26 +852,25 @@ async def cb_send_file(_, query: CallbackQuery):
     nav   = _files_nav.get(uid, {})
     files = nav.get("files")
     if not files or idx >= len(files):
-        await query.answer("File list expired. Run /files again.", show_alert=True)
+        await query.answer("File list expired.", show_alert=True)
         return
 
     entry = files[idx]
     if not os.path.exists(entry["path"]):
-        await query.answer("⚠️ File no longer on disk.", show_alert=True)
+        await query.answer("File not found.", show_alert=True)
         return
 
-    await query.answer("📤  Sending…")
+    await query.answer("📤 Sending…")
     await query.message.reply_document(
         entry["path"],
-        caption=f"📄  `{entry['name']}`\n💾  {_sz(entry['size'])}",
+        caption=f"`{entry['name']}`\n{_sz(entry['size'])}",
     )
-    # Re-post the file list so user doesn't have to scroll up
     page = nav.get("page", 0)
     await _send_file_view(query.message, uid, fi, page, reply=True)
 
 
 async def cb_delete_file(_, query: CallbackQuery):
-    """Delete a single file and refresh the view."""
+    """Delete a file."""
     uid   = query.from_user.id
     parts = query.data.split(":")
     fi    = int(parts[1])
@@ -935,55 +879,53 @@ async def cb_delete_file(_, query: CallbackQuery):
     nav   = _files_nav.get(uid, {})
     files = nav.get("files")
     if not files or idx >= len(files):
-        await query.answer("List expired. Run /files again.", show_alert=True)
+        await query.answer("List expired.", show_alert=True)
         return
 
     entry = files[idx]
     name  = entry["name"]
     if os.path.exists(entry["path"]):
         os.remove(entry["path"])
-        log.info(f"Deleted file: {entry['path']}")
+        log.info(f"Deleted: {entry['path']}")
 
-    await query.answer(f"🗑  Deleted {name}")
+    await query.answer("🗑 Deleted")
     page = nav.get("page", 0)
     await _send_file_view(query, uid, fi, page)
 
 
 async def cb_delete_folder(_, query: CallbackQuery):
-    """Confirm prompt before deleting a folder."""
+    """Confirm delete folder."""
     uid = query.from_user.id
     fi  = int(query.data.split(":")[1])
 
     nav     = _files_nav.get(uid, {})
     folders = nav.get("folders") or _scan_folders()
     if fi >= len(folders):
-        await query.answer("Folder not found.", show_alert=True)
+        await query.answer("Not found.", show_alert=True)
         return
 
     folder = folders[fi]
     markup = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅  Yes, delete it", callback_data=f"fdeldirok:{fi}"),
-        InlineKeyboardButton("❌  Cancel",          callback_data=f"fp:{fi}:0"),
+        InlineKeyboardButton("✅ Yes", callback_data=f"fdeldirok:{fi}"),
+        InlineKeyboardButton("❌ No", callback_data=f"fp:{fi}:0"),
     ]])
     await query.message.edit(
-        f"⚠️  **Delete entire folder?**\n\n"
-        f"📁  {folder['title']}\n"
-        f"_{folder['file_count']} file(s) · {_sz(folder['total_size'])}_\n\n"
-        "This cannot be undone.",
+        f"{ICON_WARN} Delete {folder['title']}?\n\n"
+        f"`{folder['file_count']} files` {DOT} `{_sz(folder['total_size'])}`",
         reply_markup=markup,
     )
     await query.answer()
 
 
 async def cb_delete_folder_confirm(_, query: CallbackQuery):
-    """Actually delete the folder."""
+    """Actually delete folder."""
     uid = query.from_user.id
     fi  = int(query.data.split(":")[1])
 
     nav     = _files_nav.get(uid, {})
     folders = nav.get("folders") or _scan_folders()
     if fi >= len(folders):
-        await query.answer("Folder not found.", show_alert=True)
+        await query.answer("Not found.", show_alert=True)
         return
 
     folder = folders[fi]
@@ -991,43 +933,40 @@ async def cb_delete_folder_confirm(_, query: CallbackQuery):
         shutil.rmtree(folder["path"])
         log.info(f"Deleted folder: {folder['path']}")
 
-    await query.answer(f"🗑  Folder deleted")
+    await query.answer("🗑 Deleted")
     await _send_folder_view(query, uid)
 
 
 async def cb_wipe_all(_, query: CallbackQuery):
-    """Confirm prompt before wiping everything."""
+    """Confirm wipe all."""
     markup = InlineKeyboardMarkup([[
-        InlineKeyboardButton("💀  Yes, wipe everything", callback_data="fwipeok"),
-        InlineKeyboardButton("❌  Cancel",                callback_data="fb"),
+        InlineKeyboardButton("💀 Yes", callback_data="fwipeok"),
+        InlineKeyboardButton("❌ No", callback_data="fb"),
     ]])
     await query.message.edit(
-        "☢️  **Wipe ALL downloads?**\n\n"
-        "Every file in every folder will be permanently deleted.\n\n"
-        "This cannot be undone.",
+        "☢️ Wipe ALL Downloads?\n\nAll files will be deleted",
         reply_markup=markup,
     )
     await query.answer()
 
 
 async def cb_wipe_all_confirm(_, query: CallbackQuery):
-    """Actually wipe everything."""
+    """Wipe all downloads."""
     uid = query.from_user.id
     if os.path.exists(DOWNLOAD_BASE):
         shutil.rmtree(DOWNLOAD_BASE)
         os.makedirs(DOWNLOAD_BASE, exist_ok=True)
         log.info("Wiped all downloads")
     _files_nav.pop(uid, None)
-    await query.answer("💀  All downloads wiped")
-    await query.message.edit("📭  Downloads folder has been wiped clean.")
-
+    await query.answer("💀 Wiped")
+    await query.message.edit("📭 All downloads cleared")
 
 
 async def cmd_killall(_, message: Message):
     global _worker_task, _current_job, _job_queue
 
     if not (_worker_task and not _worker_task.done()) and not _job_queue:
-        return await message.reply("ℹ️ Nothing is running.")
+        return await message.reply(f"{ICON_INFO} Nothing running")
 
     if _current_job:
         _current_job["cancelled"] = True
@@ -1038,15 +977,15 @@ async def cmd_killall(_, message: Message):
     _current_job = None
     _job_queue.clear()
 
-    await message.reply("🛑 **Killed.** Queue cleared.")
-    log.info("killall — worker cancelled, queue cleared")
+    await message.reply(f"🛑 **Stopped** {DOT} Queue cleared")
+    log.info("killall")
 
 
 async def cmd_log(_, message: Message):
     if os.path.exists(LOG_FILE):
-        await message.reply_document(LOG_FILE, caption="📋 Session log")
+        await message.reply_document(LOG_FILE, caption="📋 Session Log")
     else:
-        await message.reply("⚠️ No log file found.")
+        await message.reply("⚠️ No log")
 
 
 async def cmd_stats(_, message: Message):
@@ -1056,33 +995,33 @@ async def cmd_stats(_, message: Message):
     proc = psutil.Process(os.getpid())
     cpu  = psutil.cpu_percent(interval=0.5)
     ram  = psutil.virtual_memory().percent
-    disk = psutil.disk_usage(dl_root).percent   # "/" is inaccessible on Termux
+    disk = psutil.disk_usage(dl_root).percent
 
     chat_line = (
-        f"`{selected_chat['title']}` · `{selected_chat['id']}`"
-        if selected_chat.get("id") else "not set"
+        f"`{selected_chat['title']}`"
+        if selected_chat.get("id") else "Not set"
     )
     job_line = (
-        f"`{len(_current_job['ids'])} IDs` in progress"
-        if _current_job else "idle"
+        f"`{len(_current_job['ids'])} IDs` downloading"
+        if _current_job and "ids" in _current_job else "Idle"
     )
 
     await message.reply(
-        "**≧◉◡◉≦ Bot Stats**\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"⏱ **Uptime:** `{_elapsed(BOT_START_TIME)}`\n"
-        f"📂 **Active Chat:** {chat_line}\n"
-        f"⚙️ **Status:** {job_line}\n"
-        f"📥 **Downloaded (session):** `{len(downloaded_ids)}` IDs\n\n"
-        f"💾 **Disk** — `{_sz(total)}` total · `{_sz(used)}` used · `{_sz(free)}` free\n"
-        f"📡 **Network** — ↑ `{_sz(net.bytes_sent)}` · ↓ `{_sz(net.bytes_recv)}`\n"
-        f"🖥 **CPU:** `{cpu}%` · **RAM:** `{ram}%` · **Disk:** `{disk}%`\n"
-        f"🧠 **Bot RAM:** `{round(proc.memory_info().rss / 1024 ** 2)} MiB`"
+        f"📊 **Bot Stats**\n"
+        f"{SEPARATOR}\n"
+        f"⏱ Uptime: `{_elapsed(BOT_START_TIME)}`\n"
+        f"📂 Chat: {chat_line}\n"
+        f"⚙️ Status: {job_line}\n"
+        f"📥 Downloaded: `{len(downloaded_ids)}` IDs\n\n"
+        f"💾 Disk: `{_sz(used)}/{_sz(total)}` ({disk:.1f}%)\n"
+        f"📡 Network: ↑ `{_sz(net.bytes_sent)}` ↓ `{_sz(net.bytes_recv)}`\n"
+        f"🖥 CPU: `{cpu:.1f}%` RAM: `{ram:.1f}%`\n"
+        f"🧠 Bot RAM: `{round(proc.memory_info().rss / 1024 ** 2)} MB`"
     )
 
 
 # ═══════════════════════════════════════════════════════════════
-# Main text handler — chat search query OR message IDs
+# Main text handler
 # ═══════════════════════════════════════════════════════════════
 
 async def handle_text(_, message: Message):
@@ -1092,19 +1031,16 @@ async def handle_text(_, message: Message):
     text  = message.text.strip()
     state = user_state.get(uid, "idle")
 
-    # ── State: selecting a chat — filter the list ──────────────
     if state == "selecting":
         await _show_dialog_list(message, uid, page=0, query=text)
         return
 
-    # ── State: idle — expect message IDs ──────────────────────
     if not selected_chat.get("id"):
         return await message.reply(
-            "⚠️ **No chat selected.**\n\n"
-            "Use /start or /setchat first."
+            f"{ICON_WARN} **No chat selected**\n\n"
+            "Use /start or /setchat"
         )
 
-    # Parse space-separated integers
     tokens  = text.split()
     msg_ids = []
     bad     = []
@@ -1116,24 +1052,21 @@ async def handle_text(_, message: Message):
 
     if bad:
         return await message.reply(
-            f"❌ Invalid token(s): `{' '.join(bad)}`\n\n"
-            "Send message IDs (numbers only), separated by spaces.\n"
-            "_Example: `26473` or `26473 26570 26600`_"
+            f"{ICON_ERROR} Invalid: `{' '.join(bad)}`\n\n"
+            "Send message IDs only (space-separated)"
         )
     if not msg_ids:
         return await message.reply(
-            "Send at least one message ID.\n"
-            "_Example: `26473` or `26473 26570 26600`_"
+            "Send at least one message ID"
         )
 
     entries = [{"id": mid, "status": "queued"} for mid in msg_ids]
 
-    # ── Queue if a job is already running ─────────────────────
     if _current_job or (_worker_task and not _worker_task.done()):
         pos = len(_job_queue) + 1
         progress_msg = await message.reply(
-            f"📋 **Queued** (position {pos}) · {len(msg_ids)} ID(s)\n"
-            f"📂 `{selected_chat['title']}`\n"
+            f"📋 **Queued** (#{pos}) {DOT} {len(msg_ids)} ID(s)\n"
+            f"{ICON_FOLDER} `{selected_chat['title']}`\n"
             + "\n".join(f"⏸ `{mid}`" for mid in msg_ids)
         )
         job = {
@@ -1145,13 +1078,12 @@ async def handle_text(_, message: Message):
             "cancelled":    False,
         }
         _job_queue.append(job)
-        log.info(f"Job queued (pos {pos}): {msg_ids}")
+        log.info(f"Queued: {msg_ids}")
         return
 
-    # ── No job running — start immediately ────────────────────
     progress_msg = await message.reply(
-        f"📥 **Starting…** {len(msg_ids)} ID(s)\n"
-        f"📂 `{selected_chat['title']}`"
+        f"{ICON_DL} **Starting…** {len(msg_ids)} ID(s)\n"
+        f"{ICON_FOLDER} `{selected_chat['title']}`"
     )
     job = {
         "ids":          msg_ids,
@@ -1165,10 +1097,6 @@ async def handle_text(_, message: Message):
     _worker_task = asyncio.create_task(_run_job(job))
 
 
-# ═══════════════════════════════════════════════════════════════
-# Callback — chat selection buttons
-# ═══════════════════════════════════════════════════════════════
-
 async def cb_select_chat(_, query: CallbackQuery):
     global selected_chat
 
@@ -1177,7 +1105,7 @@ async def cb_select_chat(_, query: CallbackQuery):
     pool = search_results.get(uid, [])
 
     if idx >= len(pool):
-        return await query.answer("Selection expired, search again.", show_alert=True)
+        return await query.answer("Expired", show_alert=True)
 
     chosen = pool[idx]
     selected_chat = {"id": chosen["id"], "title": chosen["title"]}
@@ -1187,20 +1115,19 @@ async def cb_select_chat(_, query: CallbackQuery):
     search_results.pop(uid, None)
 
     await query.message.edit(
-        f"✅ **Chat set!**\n\n"
-        f"📂 **{chosen['title']}**\n"
-        f"🆔 `{chosen['id']}`  ·  type: `{chosen['type']}`\n\n"
-        "Ready. Send me message IDs.\n"
-        "_Example: `26473` or `26473 26570 26600`_"
+        f"{ICON_SUCCESS} **Chat Set**\n\n"
+        f"{ICON_FOLDER} `{chosen['title']}`\n"
+        f"🆔 `{chosen['id']}`\n\n"
+        "Send message IDs to download"
     )
-    await query.answer("✅ Chat selected!")
-    log.info(f"Chat selected: {chosen['title']} ({chosen['id']})")
+    await query.answer()
+    log.info(f"Chat: {chosen['title']}")
 
 
 async def cb_page(_, query: CallbackQuery):
-    """Handle ⬅️ / ➡️ pagination buttons."""
+    """Handle pagination."""
     uid   = query.from_user.id
-    parts = query.data.split(":", 2)          # pg:<page>:<query>
+    parts = query.data.split(":", 2)
     page  = int(parts[1])
     q     = parts[2] if len(parts) > 2 else ""
     await _show_dialog_list(query, uid, page=page, query=q)
@@ -1208,14 +1135,13 @@ async def cb_page(_, query: CallbackQuery):
 
 
 async def cb_open_files_from_job(_, query: CallbackQuery):
-    """📂 Open Files button on a finished job summary — jump straight to that folder."""
+    """Open files from job."""
     uid       = query.from_user.id
     folder_id = query.data.split(":")[1]
     folders   = _scan_folders()
-    # Find the matching folder index
     fi = next((i for i, f in enumerate(folders) if f["folder_id"] == folder_id), None)
     if fi is None:
-        await query.answer("Folder not found. It may have been deleted.", show_alert=True)
+        await query.answer("Not found", show_alert=True)
         return
     _files_nav[uid] = {"view": "folders", "folders": folders}
     await query.answer()
@@ -1227,17 +1153,17 @@ async def cb_open_files_from_job(_, query: CallbackQuery):
 # ═══════════════════════════════════════════════════════════════
 
 async def _set_bot_commands() -> None:
-    """Register all commands in the Telegram bot menu bar."""
+    """Register commands."""
     await bot.set_bot_commands([
-        BotCommand("start",   "Reset session & pick a new chat"),
-        BotCommand("setchat", "Change the active chat"),
-        BotCommand("files",   "Browse & manage downloaded files"),
-        BotCommand("killall", "Cancel download & clear queue"),
-        BotCommand("stats",   "Disk, CPU, RAM & network usage"),
-        BotCommand("log",     "Send the current session log"),
-        BotCommand("help",    "Show command reference"),
+        BotCommand("start",   "Start new session"),
+        BotCommand("setchat", "Change chat"),
+        BotCommand("files",   "Browse downloads"),
+        BotCommand("killall", "Stop all downloads"),
+        BotCommand("stats",   "System stats"),
+        BotCommand("log",     "Session log"),
+        BotCommand("help",    "Help"),
     ])
-    log.info("Bot commands registered.")
+    log.info("Commands registered")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1250,16 +1176,12 @@ async def _initialize() -> None:
     log.info("Starting user client…")
     await user_client.start()
     await _load_dialogs()
-    await _set_bot_commands()
-    log.info("Initialization complete.")
+    log.info("Initialization complete")
 
 
 async def main() -> None:
     global bot, user_client
 
-    # Instantiate clients here so they bind to the running event loop.
-    # Creating them at module level causes "Future attached to a different loop"
-    # on Python 3.10+ because Pyrogram grabs the loop at construction time.
     bot = Client(
         "media_bot",
         api_id=PyroConf.API_ID,
@@ -1277,7 +1199,6 @@ async def main() -> None:
         sleep_threshold=30,
     )
 
-    # Register handlers now that bot exists
     bot.add_handler(MessageHandler(cmd_start,   filters.command("start")   & filters.private))
     bot.add_handler(MessageHandler(cmd_setchat, filters.command("setchat") & filters.private))
     bot.add_handler(MessageHandler(cmd_help,    filters.command("help")    & filters.private))
@@ -1306,13 +1227,14 @@ async def main() -> None:
 
     await _initialize()
     await bot.start()
-    log.info("Bot is online.")
+    await _set_bot_commands()
+    log.info("Bot is online")
     try:
-        await asyncio.Event().wait()   # run forever
+        await asyncio.Event().wait()
     finally:
         await bot.stop()
         await user_client.stop()
-        log.info("Bot stopped.")
+        log.info("Bot stopped")
 
 
 if __name__ == "__main__":
