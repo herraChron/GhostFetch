@@ -1,0 +1,20 @@
+# credentials & secrets
+.env
+*.session
+*.session-journal
+
+# runtime files
+session.json
+session.log
+logs.txt
+__pycache__/
+*.py[cod]
+
+# downloads folder (can be huge)
+downloads/
+
+# editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
