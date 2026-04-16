@@ -63,6 +63,7 @@ This will ask for your phone number and a login code, then print a `SESSION_STRI
 ### 6. Configure
 
 ```bash
+cp .env.example .env
 nano .env
 ```
 
