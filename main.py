@@ -17,6 +17,7 @@ from pyrogram.errors import FloodWait, PeerIdInvalid, BadRequest, MessageNotModi
 from pyrogram.types import (
     Message, CallbackQuery,
     InlineKeyboardMarkup, InlineKeyboardButton,
+    BotCommand,
 )
 from config import PyroConf
 
@@ -25,19 +26,11 @@ from config import PyroConf
 # Constants & paths
 # ═══════════════════════════════════════════════════════════════
 
-DEFAULT_DOWNLOAD_BASE = "/data/data/com.termux/files/home/GhostFetch/downloads"
-SESSION_FILE          = "session.json"
-PATH_FILE             = "path.json"
-LOG_FILE              = "session.log"
-BOT_START_TIME        = time()
-
-PATH_PRESETS = {
-    "termux":   "/data/data/com.termux/files/home/GhostFetch/downloads",
-    "internal": "/storage/emulated/0/Download/GhostFetch/downloads",
-}
-
-# Loaded at startup from path.json, falls back to DEFAULT_DOWNLOAD_BASE
-DOWNLOAD_BASE = DEFAULT_DOWNLOAD_BASE
+DOWNLOAD_BASE    = "/data/data/com.termux/files/home/GhostFetch/downloads"
+SESSION_FILE     = "session.json"
+CHAT_NAMES_FILE  = "chat_names.json"
+LOG_FILE         = "session.log"
+BOT_START_TIME   = time()
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -81,7 +74,8 @@ _job_queue:   list               = []   # pending jobs (dicts), processed in ord
 _current_job: dict | None        = None # the job currently being downloaded
 _worker_task: asyncio.Task | None = None
 
-user_setpath_state: dict = {}  # uid → "waiting_custom"
+_files_nav:   dict               = {}   # uid → nav state for /files browser
+
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -111,29 +105,36 @@ def _save_session() -> None:
         log.error(f"Session save failed: {e}")
 
 
-def _load_path() -> None:
-    global DOWNLOAD_BASE
+# ── Chat name registry (folder_id → human title) ──────────────
+
+def _load_chat_names() -> dict:
     try:
-        with open(PATH_FILE, encoding="utf-8") as f:
-            data = json.load(f)
-        if data.get("path"):
-            DOWNLOAD_BASE = data["path"]
-            log.info(f"Loaded download path: {DOWNLOAD_BASE}")
-    except FileNotFoundError:
-        DOWNLOAD_BASE = DEFAULT_DOWNLOAD_BASE
-    except Exception as e:
-        log.warning(f"Path load failed: {e}")
-        DOWNLOAD_BASE = DEFAULT_DOWNLOAD_BASE
+        with open(CHAT_NAMES_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
 
 
-def _save_path_config(path: str) -> None:
-    global DOWNLOAD_BASE
-    DOWNLOAD_BASE = path
+def _save_chat_name(folder_id: str, title: str) -> None:
+    names = _load_chat_names()
+    if names.get(folder_id) == title:
+        return
+    names[folder_id] = title
     try:
-        with open(PATH_FILE, "w", encoding="utf-8") as f:
-            json.dump({"path": path}, f, indent=2)
+        with open(CHAT_NAMES_FILE, "w", encoding="utf-8") as f:
+            json.dump(names, f, indent=2)
     except Exception as e:
-        log.error(f"Path save failed: {e}")
+        log.warning(f"chat_names save failed: {e}")
+
+
+def _folder_title(folder_id: str) -> str:
+    """Return human-readable name for a download folder."""
+    for d in dialogs_cache:
+        if str(d["id"]).replace("-100", "") == folder_id:
+            return d["title"]
+    return _load_chat_names().get(folder_id, folder_id)
+
+
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -167,6 +168,39 @@ def _bar(pct: float, width: int = 10) -> str:
     return "█" * n + "░" * (width - n)
 
 
+def _file_emoji(filename: str) -> str:
+    """Return an emoji that matches the file's extension."""
+    ext = os.path.splitext(filename)[1].lower()
+    return {
+        # images
+        ".jpg": "🖼", ".jpeg": "🖼", ".png": "🖼", ".gif": "🖼",
+        ".webp": "🖼", ".bmp": "🖼", ".tiff": "🖼", ".heic": "🖼",
+        # video
+        ".mp4": "🎬", ".mkv": "🎬", ".avi": "🎬", ".mov": "🎬",
+        ".webm": "🎬", ".flv": "🎬", ".ts": "🎬", ".m4v": "🎬",
+        # audio
+        ".mp3": "🎵", ".ogg": "🎵", ".flac": "🎵", ".wav": "🎵",
+        ".m4a": "🎵", ".aac": "🎵", ".opus": "🎵",
+        # archives
+        ".zip": "🗜", ".rar": "🗜", ".7z": "🗜", ".tar": "🗜",
+        ".gz": "🗜", ".xz": "🗜", ".bz2": "🗜",
+        # ebooks / documents
+        ".pdf": "📕", ".epub": "📕", ".mobi": "📕", ".djvu": "📕",
+        # text / markup
+        ".txt": "📝", ".md": "📝", ".log": "📝", ".srt": "📝",
+        ".ass": "📝", ".sub": "📝",
+        # spreadsheets / data
+        ".xlsx": "📊", ".xls": "📊", ".csv": "📊", ".ods": "📊",
+        # apps / packages
+        ".apk": "📱", ".xapk": "📱", ".apks": "📱",
+        # executables / installers
+        ".exe": "🧩", ".msi": "🧩", ".dmg": "🧩", ".deb": "🧩",
+        ".rpm": "🧩",
+        # stickers
+        ".webm": "🎭", ".tgs": "🎭",
+    }.get(ext, "📄")
+
+
 # ═══════════════════════════════════════════════════════════════
 # Progress renderer
 # ═══════════════════════════════════════════════════════════════
@@ -185,7 +219,9 @@ def _render_entry(e: dict) -> str:
     mid  = f"`{e['id']}`"
 
     if e["status"] == "done":
-        return f"{icon} {mid} — {e.get('name', '?')} · **{_sz(e.get('size', 0))}**"
+        name  = e.get("name", "?")
+        emoji = _file_emoji(name)
+        return f"{emoji} {mid} — {name} · **{_sz(e.get('size', 0))}**"
 
     if e["status"] == "downloading":
         pct  = e.get("pct", 0)
@@ -210,15 +246,15 @@ def _render_job(job: dict) -> str:
     return header + rows + footer
 
 
-async def _edit(msg: Message, text: str) -> None:
+async def _edit(msg: Message, text: str, reply_markup=None) -> None:
     """Edit a message, suppressing harmless errors."""
     try:
-        await msg.edit(text)
+        await msg.edit(text, reply_markup=reply_markup)
     except MessageNotModified:
         pass
     except FloodWait as e:
         await asyncio.sleep(e.value + 1)
-        await _edit(msg, text)
+        await _edit(msg, text, reply_markup)
     except Exception as e:
         log.warning(f"Edit failed: {e}")
 
@@ -425,6 +461,10 @@ async def _run_job(job: dict) -> None:
     async def _execute(j: dict) -> None:
         global _current_job
         _current_job = j
+        # Record the chat title for the folder browser
+        folder_id = str(selected_chat.get("id", "")).replace("-100", "")
+        if folder_id and j.get("chat_title"):
+            _save_chat_name(folder_id, j["chat_title"])
         try:
             for entry in j["entries"]:
                 if j.get("cancelled"):
@@ -446,10 +486,8 @@ async def _run_job(job: dict) -> None:
             done    = sum(1 for e in j["entries"] if e["status"] == "done")
             skipped = sum(1 for e in j["entries"] if e["status"] == "skipped")
             failed  = sum(1 for e in j["entries"] if e["status"] == "failed")
-            folder  = os.path.join(
-                DOWNLOAD_BASE,
-                str(selected_chat["id"]).replace("-100", "")
-            )
+            folder_id = str(selected_chat["id"]).replace("-100", "")
+            folder    = os.path.join(DOWNLOAD_BASE, folder_id)
             queue_left = len(_job_queue)
             next_note  = f"\n⏭ `{queue_left}` job(s) still queued" if queue_left else ""
             summary = (
@@ -458,7 +496,10 @@ async def _run_job(job: dict) -> None:
                 f"✅ `{done}` done  ·  ⏭️ `{skipped}` skipped  ·  ❌ `{failed}` failed\n"
                 f"📁 `{folder}`" + next_note
             )
-            await _edit(j["progress_msg"], summary)
+            open_files_markup = InlineKeyboardMarkup([[
+                InlineKeyboardButton("📂  Open Files", callback_data=f"openf:{folder_id}")
+            ]])
+            await _edit(j["progress_msg"], summary, reply_markup=open_files_markup)
             log.info(f"Job finished — done={done} skipped={skipped} failed={failed}")
 
     try:
@@ -560,26 +601,96 @@ async def cmd_start(_, message: Message):
         _worker_task = None
         _current_job = None
     _job_queue.clear()
-
     downloaded_ids = set()
-    uid = message.from_user.id
-    user_state[uid] = "selecting"
 
-    prev = (
-        f"\n\n_Previous chat: **{selected_chat['title']}**_"
-        if selected_chat.get("id") else ""
-    )
+    # Build welcome buttons
+    buttons = []
+    if selected_chat.get("id"):
+        buttons.append([InlineKeyboardButton(
+            f"▶️  Continue — {selected_chat['title']}",
+            callback_data="welcome:resume",
+        )])
+    buttons.append([
+        InlineKeyboardButton("📂  Set Chat", callback_data="welcome:setchat"),
+        InlineKeyboardButton("❓  Help",     callback_data="welcome:help"),
+    ])
+
     await message.reply(
-        "👋 **GhostFetch** — session reset." + prev,
+        "👻 **GhostFetch**\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Download media from restricted Telegram chats "
+        "— channels, groups, bots — straight to your device.\n\n"
+        "Pick a source chat, send message IDs, done.\n\n"
+        "_by herraChron_",
+        reply_markup=InlineKeyboardMarkup(buttons),
         disable_web_page_preview=True,
     )
-    await _show_dialog_list(message, uid)
 
 
 async def cmd_setchat(_, message: Message):
     uid = message.from_user.id
     user_state[uid] = "selecting"
     await _show_dialog_list(message, uid)
+
+
+async def cb_welcome(_, query: CallbackQuery):
+    """Handle the three buttons on the /start welcome screen."""
+    uid    = query.from_user.id
+    action = query.data.split(":")[1]
+
+    if action == "resume":
+        if not selected_chat.get("id"):
+            await query.answer("No previous session found.", show_alert=True)
+            return
+        user_state[uid] = "idle"
+        await query.message.edit(
+            f"✅ **Resumed**\n\n"
+            f"📂 **{selected_chat['title']}**\n"
+            f"🆔 `{selected_chat['id']}`\n\n"
+            "Ready. Send me message IDs.\n"
+            "_Example: `26473` or `26473 26570 26600`_"
+        )
+        await query.answer("✅ Session resumed")
+
+    elif action == "setchat":
+        user_state[uid] = "selecting"
+        await query.answer()
+        await _show_dialog_list(query, uid)
+
+    elif action == "help":
+        await query.answer()
+        await query.message.edit(
+            "📖 **GhostFetch — Help**\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "**Getting started**\n"
+            "1. Send /start — pick a chat from the list\n"
+            "2. Send one or more message IDs to download\n"
+            "3. The bot downloads them and saves to your Termux storage\n\n"
+            "**Commands**\n"
+            "/start — reset session & pick a new chat\n"
+            "/setchat — change the active chat without resetting\n"
+            "/files — browse, receive, or delete downloaded files\n"
+            "/killall — cancel the running download & clear queue\n"
+            "/stats — show disk, CPU, RAM & network usage\n"
+            "/log — send the current session log file\n"
+            "/help — show this message\n\n"
+            "**Sending IDs**\n"
+            "• Single ID: `26473`\n"
+            "• Multiple IDs: `26473 26570 26600`\n"
+            "• While a download is running, new IDs are **queued** automatically\n\n"
+            "**Queue**\n"
+            "• Each batch of IDs you send becomes one job\n"
+            "• Jobs run one after another, automatically\n"
+            "• /killall cancels the current job and clears the entire queue\n\n"
+            "**Chat selection**\n"
+            "• After /start or /setchat, a full list of your chats appears\n"
+            "• Use ⬅️ / ➡️ to page through them\n"
+            "• Or just type part of a name to filter the list\n\n"
+            "**Files are saved to:**\n"
+            f"`{DOWNLOAD_BASE}/<chat_id>/`\n\n"
+            "Use /files to browse and re-send any downloaded file.",
+            disable_web_page_preview=True,
+        )
 
 
 async def cmd_help(_, message: Message):
@@ -593,7 +704,7 @@ async def cmd_help(_, message: Message):
         "**Commands**\n"
         "/start — reset session & pick a new chat\n"
         "/setchat — change the active chat without resetting\n"
-        "/setpath — change the download folder\n"
+        "/files — browse, receive, or delete downloaded files\n"
         "/killall — cancel the running download & clear queue\n"
         "/stats — show disk, CPU, RAM & network usage\n"
         "/log — send the current session log file\n"
@@ -611,71 +722,329 @@ async def cmd_help(_, message: Message):
         "• Use ⬅️ / ➡️ to page through them\n"
         "• Or just type part of a name to filter the list\n\n"
         "**Files are saved to:**\n"
-        f"`{DOWNLOAD_BASE}/<chat_id>/`",
+        f"`{DOWNLOAD_BASE}/<chat_id>/`\n\n"
+        "Use /files to browse and re-send any downloaded file.",
         disable_web_page_preview=True,
     )
 
 
-async def cmd_setpath(_, message: Message):
-    uid = message.from_user.id
-    user_setpath_state.pop(uid, None)
-    markup = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📱 Internal Downloads", callback_data="path:internal")],
-        [InlineKeyboardButton("🖥 Termux Home",        callback_data="path:termux")],
-        [InlineKeyboardButton("✏️ Custom path",        callback_data="path:custom")],
-    ])
-    await message.reply(
-        "📁 **Choose a download location:**\n\n"
-        f"📱 Internal Downloads:\n`{PATH_PRESETS['internal']}`\n\n"
-        f"🖥 Termux Home:\n`{PATH_PRESETS['termux']}`\n\n"
-        f"_Current: `{DOWNLOAD_BASE}`_",
-        reply_markup=markup,
+# ═══════════════════════════════════════════════════════════════
+# /files — folder-first browser: folders → files → send / delete
+# ═══════════════════════════════════════════════════════════════
+
+FILES_PAGE_SIZE = 6
+
+
+def _scan_folders() -> list[dict]:
+    """Return sorted list of download folders with metadata."""
+    result = []
+    if not os.path.exists(DOWNLOAD_BASE):
+        return result
+    for folder_id in sorted(os.listdir(DOWNLOAD_BASE)):
+        full = os.path.join(DOWNLOAD_BASE, folder_id)
+        if not os.path.isdir(full):
+            continue
+        files = [f for f in os.listdir(full) if os.path.isfile(os.path.join(full, f))]
+        total = sum(os.path.getsize(os.path.join(full, f)) for f in files)
+        result.append({
+            "folder_id":  folder_id,
+            "title":      _folder_title(folder_id),
+            "file_count": len(files),
+            "total_size": total,
+            "path":       full,
+        })
+    return result
+
+
+def _scan_files_in(folder_path: str) -> list[dict]:
+    """Return files inside a folder, newest first."""
+    files = []
+    if not os.path.isdir(folder_path):
+        return files
+    for fname in os.listdir(folder_path):
+        fpath = os.path.join(folder_path, fname)
+        if os.path.isfile(fpath):
+            files.append({"path": fpath, "name": fname, "size": os.path.getsize(fpath)})
+    files.sort(key=lambda x: os.path.getmtime(x["path"]), reverse=True)
+    return files
+
+
+def _folders_markup(folders: list) -> tuple[str, InlineKeyboardMarkup]:
+    total_files = sum(f["file_count"] for f in folders)
+    total_size  = sum(f["total_size"] for f in folders)
+    buttons = []
+    for i, f in enumerate(folders):
+        label = f"📁  {f['title']}  ·  {f['file_count']} file(s)  ·  {_sz(f['total_size'])}"
+        buttons.append([InlineKeyboardButton(label, callback_data=f"fd:{i}")])
+    buttons.append([InlineKeyboardButton("🗑  Wipe ALL downloads", callback_data="fwipe")])
+    header = (
+        f"🗂  **Downloads**\n"
+        f"_{len(folders)} folder(s)  ·  {total_files} file(s)  ·  {_sz(total_size)}_\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "_Tap a folder to browse_"
     )
+    return header, InlineKeyboardMarkup(buttons)
 
 
-async def cb_setpath(_, query: CallbackQuery):
-    uid    = query.from_user.id
-    choice = query.data.split(":")[1]
+def _folder_files_markup(folder: dict, fi: int, files: list, page: int) -> tuple[str, InlineKeyboardMarkup]:
+    total       = len(files)
+    total_pages = max(1, -(-total // FILES_PAGE_SIZE))
+    start       = page * FILES_PAGE_SIZE
+    page_items  = files[start: start + FILES_PAGE_SIZE]
 
-    if choice == "custom":
-        user_setpath_state[uid] = "waiting_custom"
-        await query.message.edit(
-            "✏️ **Send me the full path you want to use.**\n\n"
-            "_Example: `/sdcard/MyFolder/GhostFetch`_"
-        )
-        await query.answer()
+    buttons = []
+    for i, f in enumerate(page_items):
+        actual = start + i
+        short  = f["name"] if len(f["name"]) <= 28 else f["name"][:25] + "…"
+        emoji  = _file_emoji(f["name"])
+        buttons.append([
+            InlineKeyboardButton(f"{emoji}  {short}  ({_sz(f['size'])})", callback_data=f"fl:{fi}:{actual}"),
+            InlineKeyboardButton("🗑", callback_data=f"fdel:{fi}:{actual}"),
+        ])
+
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("⬅️", callback_data=f"fp:{fi}:{page - 1}"))
+    nav.append(InlineKeyboardButton("🔙  Back", callback_data="fb"))
+    if start + FILES_PAGE_SIZE < total:
+        nav.append(InlineKeyboardButton("➡️", callback_data=f"fp:{fi}:{page + 1}"))
+    buttons.append(nav)
+    buttons.append([InlineKeyboardButton(f"🗑  Delete entire folder", callback_data=f"fdeldir:{fi}")])
+
+    header = (
+        f"📁  **{folder['title']}**\n"
+        f"_{total} file(s)  ·  {_sz(folder['total_size'])}  ·  page {page + 1}/{total_pages}_\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "_Tap name to receive · 🗑 to delete_"
+    )
+    return header, InlineKeyboardMarkup(buttons)
+
+
+async def _send_folder_view(target, uid: int) -> None:
+    """Send or edit the folder list. target = Message or CallbackQuery."""
+    folders = _scan_folders()
+    _files_nav[uid] = {"view": "folders", "folders": folders}
+    if not folders:
+        text = "📭  No downloads yet.\n\nFiles appear here after a download job finishes."
+        if hasattr(target, "reply"):
+            await target.reply(text)
+        else:
+            await target.message.edit(text)
+        return
+    text, markup = _folders_markup(folders)
+    if hasattr(target, "reply"):
+        await target.reply(text, reply_markup=markup)
+    else:
+        await target.message.edit(text, reply_markup=markup)
+
+
+async def _send_file_view(target, uid: int, fi: int, page: int = 0, reply: bool = False) -> None:
+    """Send or edit the file list for folder index fi."""
+    nav     = _files_nav.get(uid, {})
+    folders = nav.get("folders") or _scan_folders()
+    if fi >= len(folders):
+        if hasattr(target, "answer"):
+            await target.answer("Folder gone. Run /files again.", show_alert=True)
+        return
+    folder = folders[fi]
+    files  = _scan_files_in(folder["path"])
+    # Refresh folder size/count after possible deletions
+    folder["file_count"] = len(files)
+    folder["total_size"] = sum(f["size"] for f in files)
+    _files_nav[uid] = {"view": "files", "folders": folders, "fi": fi, "files": files, "page": page}
+
+    if not files:
+        text   = f"📭  **{folder['title']}** is empty."
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙  Back", callback_data="fb")]])
+        if reply or hasattr(target, "reply"):
+            await target.reply(text, reply_markup=markup)
+        else:
+            await target.message.edit(text, reply_markup=markup)
         return
 
-    path = PATH_PRESETS[choice]
-    _save_path_config(path)
-    os.makedirs(path, exist_ok=True)
-    await query.message.edit(
-        f"✅ **Download path set!**\n\n`{path}`"
+    text, markup = _folder_files_markup(folder, fi, files, page)
+    if reply or (hasattr(target, "reply") and not hasattr(target, "data")):
+        await target.reply(text, reply_markup=markup)
+    else:
+        await target.message.edit(text, reply_markup=markup)
+
+
+async def cmd_files(_, message: Message):
+    await _send_folder_view(message, message.from_user.id)
+
+
+async def cb_open_folder(_, query: CallbackQuery):
+    """Tap a folder → show its files."""
+    uid = query.from_user.id
+    fi  = int(query.data.split(":")[1])
+    await _send_file_view(query, uid, fi)
+    await query.answer()
+
+
+async def cb_files_page(_, query: CallbackQuery):
+    """Paginate file list."""
+    uid   = query.from_user.id
+    parts = query.data.split(":")
+    fi    = int(parts[1])
+    page  = int(parts[2])
+    await _send_file_view(query, uid, fi, page)
+    await query.answer()
+
+
+async def cb_back_to_folders(_, query: CallbackQuery):
+    """🔙 Back → folder list."""
+    await _send_folder_view(query, query.from_user.id)
+    await query.answer()
+
+
+async def cb_send_file(_, query: CallbackQuery):
+    """Send the tapped file, then re-post the file list below it."""
+    uid   = query.from_user.id
+    parts = query.data.split(":")
+    fi    = int(parts[1])
+    idx   = int(parts[2])
+
+    nav   = _files_nav.get(uid, {})
+    files = nav.get("files")
+    if not files or idx >= len(files):
+        await query.answer("File list expired. Run /files again.", show_alert=True)
+        return
+
+    entry = files[idx]
+    if not os.path.exists(entry["path"]):
+        await query.answer("⚠️ File no longer on disk.", show_alert=True)
+        return
+
+    await query.answer("📤  Sending…")
+    await query.message.reply_document(
+        entry["path"],
+        caption=f"📄  `{entry['name']}`\n💾  {_sz(entry['size'])}",
     )
-    await query.answer("✅ Path updated!")
-    log.info(f"Download path set to: {path}")
+    # Re-post the file list so user doesn't have to scroll up
+    page = nav.get("page", 0)
+    await _send_file_view(query.message, uid, fi, page, reply=True)
+
+
+async def cb_delete_file(_, query: CallbackQuery):
+    """Delete a single file and refresh the view."""
+    uid   = query.from_user.id
+    parts = query.data.split(":")
+    fi    = int(parts[1])
+    idx   = int(parts[2])
+
+    nav   = _files_nav.get(uid, {})
+    files = nav.get("files")
+    if not files or idx >= len(files):
+        await query.answer("List expired. Run /files again.", show_alert=True)
+        return
+
+    entry = files[idx]
+    name  = entry["name"]
+    if os.path.exists(entry["path"]):
+        os.remove(entry["path"])
+        log.info(f"Deleted file: {entry['path']}")
+
+    await query.answer(f"🗑  Deleted {name}")
+    page = nav.get("page", 0)
+    await _send_file_view(query, uid, fi, page)
+
+
+async def cb_delete_folder(_, query: CallbackQuery):
+    """Confirm prompt before deleting a folder."""
+    uid = query.from_user.id
+    fi  = int(query.data.split(":")[1])
+
+    nav     = _files_nav.get(uid, {})
+    folders = nav.get("folders") or _scan_folders()
+    if fi >= len(folders):
+        await query.answer("Folder not found.", show_alert=True)
+        return
+
+    folder = folders[fi]
+    markup = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅  Yes, delete it", callback_data=f"fdeldirok:{fi}"),
+        InlineKeyboardButton("❌  Cancel",          callback_data=f"fp:{fi}:0"),
+    ]])
+    await query.message.edit(
+        f"⚠️  **Delete entire folder?**\n\n"
+        f"📁  {folder['title']}\n"
+        f"_{folder['file_count']} file(s) · {_sz(folder['total_size'])}_\n\n"
+        "This cannot be undone.",
+        reply_markup=markup,
+    )
+    await query.answer()
+
+
+async def cb_delete_folder_confirm(_, query: CallbackQuery):
+    """Actually delete the folder."""
+    uid = query.from_user.id
+    fi  = int(query.data.split(":")[1])
+
+    nav     = _files_nav.get(uid, {})
+    folders = nav.get("folders") or _scan_folders()
+    if fi >= len(folders):
+        await query.answer("Folder not found.", show_alert=True)
+        return
+
+    folder = folders[fi]
+    if os.path.exists(folder["path"]):
+        shutil.rmtree(folder["path"])
+        log.info(f"Deleted folder: {folder['path']}")
+
+    await query.answer(f"🗑  Folder deleted")
+    await _send_folder_view(query, uid)
+
+
+async def cb_wipe_all(_, query: CallbackQuery):
+    """Confirm prompt before wiping everything."""
+    markup = InlineKeyboardMarkup([[
+        InlineKeyboardButton("💀  Yes, wipe everything", callback_data="fwipeok"),
+        InlineKeyboardButton("❌  Cancel",                callback_data="fb"),
+    ]])
+    await query.message.edit(
+        "☢️  **Wipe ALL downloads?**\n\n"
+        "Every file in every folder will be permanently deleted.\n\n"
+        "This cannot be undone.",
+        reply_markup=markup,
+    )
+    await query.answer()
+
+
+async def cb_wipe_all_confirm(_, query: CallbackQuery):
+    """Actually wipe everything."""
+    uid = query.from_user.id
+    if os.path.exists(DOWNLOAD_BASE):
+        shutil.rmtree(DOWNLOAD_BASE)
+        os.makedirs(DOWNLOAD_BASE, exist_ok=True)
+        log.info("Wiped all downloads")
+    _files_nav.pop(uid, None)
+    await query.answer("💀  All downloads wiped")
+    await query.message.edit("📭  Downloads folder has been wiped clean.")
+
 
 
 async def cmd_killall(_, message: Message):
     global _worker_task, _current_job, _job_queue
+
+    if not (_worker_task and not _worker_task.done()) and not _job_queue:
+        return await message.reply("ℹ️ Nothing is running.")
+
+    if _current_job:
+        _current_job["cancelled"] = True
     if _worker_task and not _worker_task.done():
-        if _current_job:
-            _current_job["cancelled"] = True
         _worker_task.cancel()
-        _worker_task = None
-        _current_job = None
-        _job_queue.clear()
-        await message.reply("🛑 **Download killed and queue cleared.**")
-    else:
-        await message.reply("ℹ️ Nothing is currently running.")
+
+    _worker_task = None
+    _current_job = None
+    _job_queue.clear()
+
+    await message.reply("🛑 **Killed.** Queue cleared.")
+    log.info("killall — worker cancelled, queue cleared")
 
 
 async def cmd_log(_, message: Message):
     if os.path.exists(LOG_FILE):
-        await message.reply_document(
-            LOG_FILE,
-            caption=f"📋 **Session Log** · `{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`",
-        )
+        await message.reply_document(LOG_FILE, caption="📋 Session log")
     else:
         await message.reply("⚠️ No log file found.")
 
@@ -722,15 +1091,6 @@ async def handle_text(_, message: Message):
     uid   = message.from_user.id
     text  = message.text.strip()
     state = user_state.get(uid, "idle")
-
-    # ── State: waiting for custom path ────────────────────────
-    if user_setpath_state.get(uid) == "waiting_custom":
-        user_setpath_state.pop(uid)
-        if not text.startswith("/"):
-            return await message.reply("⚠️ Path must start with `/`. Try again with /setpath.")
-        _save_path_config(text)
-        os.makedirs(text, exist_ok=True)
-        return await message.reply(f"✅ **Download path set!**\n\n`{text}`")
 
     # ── State: selecting a chat — filter the list ──────────────
     if state == "selecting":
@@ -847,17 +1207,50 @@ async def cb_page(_, query: CallbackQuery):
     await query.answer()
 
 
+async def cb_open_files_from_job(_, query: CallbackQuery):
+    """📂 Open Files button on a finished job summary — jump straight to that folder."""
+    uid       = query.from_user.id
+    folder_id = query.data.split(":")[1]
+    folders   = _scan_folders()
+    # Find the matching folder index
+    fi = next((i for i, f in enumerate(folders) if f["folder_id"] == folder_id), None)
+    if fi is None:
+        await query.answer("Folder not found. It may have been deleted.", show_alert=True)
+        return
+    _files_nav[uid] = {"view": "folders", "folders": folders}
+    await query.answer()
+    await _send_file_view(query.message, uid, fi, page=0, reply=True)
+
+
+# ═══════════════════════════════════════════════════════════════
+# Bot command menu
+# ═══════════════════════════════════════════════════════════════
+
+async def _set_bot_commands() -> None:
+    """Register all commands in the Telegram bot menu bar."""
+    await bot.set_bot_commands([
+        BotCommand("start",   "Reset session & pick a new chat"),
+        BotCommand("setchat", "Change the active chat"),
+        BotCommand("files",   "Browse & manage downloaded files"),
+        BotCommand("killall", "Cancel download & clear queue"),
+        BotCommand("stats",   "Disk, CPU, RAM & network usage"),
+        BotCommand("log",     "Send the current session log"),
+        BotCommand("help",    "Show command reference"),
+    ])
+    log.info("Bot commands registered.")
+
+
 # ═══════════════════════════════════════════════════════════════
 # Startup & entry point
 # ═══════════════════════════════════════════════════════════════
 
 async def _initialize() -> None:
     _load_session()
-    _load_path()
     os.makedirs(DOWNLOAD_BASE, exist_ok=True)
     log.info("Starting user client…")
     await user_client.start()
     await _load_dialogs()
+    await _set_bot_commands()
     log.info("Initialization complete.")
 
 
@@ -888,18 +1281,28 @@ async def main() -> None:
     bot.add_handler(MessageHandler(cmd_start,   filters.command("start")   & filters.private))
     bot.add_handler(MessageHandler(cmd_setchat, filters.command("setchat") & filters.private))
     bot.add_handler(MessageHandler(cmd_help,    filters.command("help")    & filters.private))
+    bot.add_handler(MessageHandler(cmd_files,   filters.command("files")   & filters.private))
     bot.add_handler(MessageHandler(cmd_killall, filters.command("killall") & filters.private))
     bot.add_handler(MessageHandler(cmd_log,     filters.command("log")     & filters.private))
     bot.add_handler(MessageHandler(cmd_stats,   filters.command("stats")   & filters.private))
-    bot.add_handler(MessageHandler(cmd_setpath, filters.command("setpath") & filters.private))
     bot.add_handler(MessageHandler(
         handle_text,
         filters.private & filters.text
-        & ~filters.command(["start", "setchat", "help", "killall", "log", "stats", "setpath"]),
+        & ~filters.command(["start", "setchat", "help", "killall", "log", "stats", "files"]),
     ))
-    bot.add_handler(CallbackQueryHandler(cb_select_chat, filters.regex(r"^sc:\d+$")))
-    bot.add_handler(CallbackQueryHandler(cb_page,        filters.regex(r"^pg:\d+")))
-    bot.add_handler(CallbackQueryHandler(cb_setpath,     filters.regex(r"^path:")))
+    bot.add_handler(CallbackQueryHandler(cb_select_chat,          filters.regex(r"^sc:\d+$")))
+    bot.add_handler(CallbackQueryHandler(cb_page,                 filters.regex(r"^pg:\d+")))
+    bot.add_handler(CallbackQueryHandler(cb_welcome,              filters.regex(r"^welcome:")))
+    bot.add_handler(CallbackQueryHandler(cb_open_files_from_job,  filters.regex(r"^openf:")))
+    bot.add_handler(CallbackQueryHandler(cb_open_folder,          filters.regex(r"^fd:\d+$")))
+    bot.add_handler(CallbackQueryHandler(cb_files_page,           filters.regex(r"^fp:\d+:\d+$")))
+    bot.add_handler(CallbackQueryHandler(cb_back_to_folders,      filters.regex(r"^fb$")))
+    bot.add_handler(CallbackQueryHandler(cb_send_file,            filters.regex(r"^fl:\d+:\d+$")))
+    bot.add_handler(CallbackQueryHandler(cb_delete_file,          filters.regex(r"^fdel:\d+:\d+$")))
+    bot.add_handler(CallbackQueryHandler(cb_delete_folder,        filters.regex(r"^fdeldir:\d+$")))
+    bot.add_handler(CallbackQueryHandler(cb_delete_folder_confirm,filters.regex(r"^fdeldirok:\d+$")))
+    bot.add_handler(CallbackQueryHandler(cb_wipe_all,             filters.regex(r"^fwipe$")))
+    bot.add_handler(CallbackQueryHandler(cb_wipe_all_confirm,     filters.regex(r"^fwipeok$")))
 
     await _initialize()
     await bot.start()
