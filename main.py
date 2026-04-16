@@ -25,10 +25,19 @@ from config import PyroConf
 # Constants & paths
 # ═══════════════════════════════════════════════════════════════
 
-DOWNLOAD_BASE  = "/data/data/com.termux/files/home/GhostFetch"
-SESSION_FILE   = "session.json"
-LOG_FILE       = "session.log"
-BOT_START_TIME = time()
+DEFAULT_DOWNLOAD_BASE = "/data/data/com.termux/files/home/GhostFetch/downloads"
+SESSION_FILE          = "session.json"
+PATH_FILE             = "path.json"
+LOG_FILE              = "session.log"
+BOT_START_TIME        = time()
+
+PATH_PRESETS = {
+    "termux":   "/data/data/com.termux/files/home/GhostFetch/downloads",
+    "internal": "/storage/emulated/0/Download/GhostFetch/downloads",
+}
+
+# Loaded at startup from path.json, falls back to DEFAULT_DOWNLOAD_BASE
+DOWNLOAD_BASE = DEFAULT_DOWNLOAD_BASE
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -52,6 +61,8 @@ log = logging.getLogger(__name__)
 # ═══════════════════════════════════════════════════════════════
 
 # Clients are initialized inside main() so they bind to the correct event loop.
+# Creating them at module level causes "Future attached to a different loop"
+# on Python 3.10+ because Pyrogram grabs the loop at construction time.
 bot         = None
 user_client = None
 
@@ -69,6 +80,8 @@ search_results: dict        = {}    # uid → [dialog, …]  (temp, per search)
 _job_queue:   list               = []   # pending jobs (dicts), processed in order
 _current_job: dict | None        = None # the job currently being downloaded
 _worker_task: asyncio.Task | None = None
+
+user_setpath_state: dict = {}  # uid → "waiting_custom"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -96,6 +109,53 @@ def _save_session() -> None:
             json.dump(selected_chat, f, indent=2)
     except Exception as e:
         log.error(f"Session save failed: {e}")
+
+
+def _load_path() -> None:
+    global DOWNLOAD_BASE
+    try:
+        with open(PATH_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        if data.get("path"):
+            DOWNLOAD_BASE = data["path"]
+            log.info(f"Loaded download path: {DOWNLOAD_BASE}")
+    except FileNotFoundError:
+        DOWNLOAD_BASE = DEFAULT_DOWNLOAD_BASE
+    except Exception as e:
+        log.warning(f"Path load failed: {e}")
+        DOWNLOAD_BASE = DEFAULT_DOWNLOAD_BASE
+
+
+def _save_path_config(path: str) -> None:
+    global DOWNLOAD_BASE
+    DOWNLOAD_BASE = path
+    try:
+        with open(PATH_FILE, "w", encoding="utf-8") as f:
+            json.dump({"path": path}, f, indent=2)
+    except Exception as e:
+        log.error(f"Path save failed: {e}")
+
+
+def _try_makedirs(path: str) -> tuple[bool, str]:
+    """
+    Attempt to create a directory path. Returns (success, error_message).
+    On failure, the path is NOT saved — callers should check before persisting.
+    """
+    try:
+        os.makedirs(path, exist_ok=True)
+        return True, ""
+    except OSError as e:
+        msg = str(e)
+        if e.errno == 13:   # EACCES — permission denied
+            hint = "Permission denied. Run `termux-setup-storage` in Termux and try again."
+        elif e.errno == 14: # EFAULT — bad address (no storage permission on Android)
+            hint = "Storage not accessible. Run `termux-setup-storage` in Termux and try again."
+        elif e.errno == 30: # EROFS — read-only filesystem
+            hint = "That filesystem is read-only."
+        else:
+            hint = msg
+        log.warning(f"makedirs failed for {path!r}: {msg}")
+        return False, hint
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -555,6 +615,7 @@ async def cmd_help(_, message: Message):
         "**Commands**\n"
         "/start — reset session & pick a new chat\n"
         "/setchat — change the active chat without resetting\n"
+        "/setpath — change the download folder\n"
         "/killall — cancel the running download & clear queue\n"
         "/stats — show disk, CPU, RAM & network usage\n"
         "/log — send the current session log file\n"
@@ -577,26 +638,79 @@ async def cmd_help(_, message: Message):
     )
 
 
+async def cmd_setpath(_, message: Message):
+    uid = message.from_user.id
+    user_setpath_state.pop(uid, None)
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📱 Internal Downloads", callback_data="path:internal")],
+        [InlineKeyboardButton("🖥 Termux Home",        callback_data="path:termux")],
+        [InlineKeyboardButton("✏️ Custom path",        callback_data="path:custom")],
+    ])
+    await message.reply(
+        "📁 **Choose a download location:**\n\n"
+        f"📱 Internal Downloads:\n`{PATH_PRESETS['internal']}`\n\n"
+        f"🖥 Termux Home:\n`{PATH_PRESETS['termux']}`\n\n"
+        "⚠️ _Internal Downloads requires storage permission.\n"
+        "Run `termux-setup-storage` in Termux if you haven't already._\n\n"
+        f"_Current: `{DOWNLOAD_BASE}`_",
+        reply_markup=markup,
+    )
+
+
+async def cb_setpath(_, query: CallbackQuery):
+    uid    = query.from_user.id
+    choice = query.data.split(":")[1]
+
+    if choice == "custom":
+        user_setpath_state[uid] = "waiting_custom"
+        await query.message.edit(
+            "✏️ **Send me the full path you want to use.**\n\n"
+            "_Example: `/sdcard/MyFolder/GhostFetch`_"
+        )
+        await query.answer()
+        return
+
+    path = PATH_PRESETS[choice]
+    ok, err = _try_makedirs(path)
+    if not ok:
+        await query.message.edit(
+            f"❌ **Cannot access that path:**\n\n`{err}`\n\n"
+            "Use /setpath to choose a different location."
+        )
+        await query.answer("❌ Path not accessible")
+        log.warning(f"setpath failed for preset {choice!r}: {err}")
+        return
+
+    _save_path_config(path)
+    await query.message.edit(
+        f"✅ **Download path set!**\n\n`{path}`"
+    )
+    await query.answer("✅ Path updated!")
+    log.info(f"Download path set to: {path}")
+
+
 async def cmd_killall(_, message: Message):
     global _worker_task, _current_job, _job_queue
+
+    if not (_worker_task and not _worker_task.done()) and not _job_queue:
+        return await message.reply("ℹ️ Nothing is running.")
+
+    if _current_job:
+        _current_job["cancelled"] = True
     if _worker_task and not _worker_task.done():
-        if _current_job:
-            _current_job["cancelled"] = True
         _worker_task.cancel()
-        _worker_task = None
-        _current_job = None
-        _job_queue.clear()
-        await message.reply("🛑 **Download killed and queue cleared.**")
-    else:
-        await message.reply("ℹ️ Nothing is currently running.")
+
+    _worker_task = None
+    _current_job = None
+    _job_queue.clear()
+
+    await message.reply("🛑 **Killed.** Queue cleared.")
+    log.info("killall — worker cancelled, queue cleared")
 
 
 async def cmd_log(_, message: Message):
     if os.path.exists(LOG_FILE):
-        await message.reply_document(
-            LOG_FILE,
-            caption=f"📋 **Session Log** · `{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`",
-        )
+        await message.reply_document(LOG_FILE, caption="📋 Session log")
     else:
         await message.reply("⚠️ No log file found.")
 
@@ -643,6 +757,20 @@ async def handle_text(_, message: Message):
     uid   = message.from_user.id
     text  = message.text.strip()
     state = user_state.get(uid, "idle")
+
+    # ── State: waiting for custom path ────────────────────────
+    if user_setpath_state.get(uid) == "waiting_custom":
+        user_setpath_state.pop(uid)
+        if not text.startswith("/"):
+            return await message.reply("⚠️ Path must start with `/`. Try again with /setpath.")
+        ok, err = _try_makedirs(text)
+        if not ok:
+            return await message.reply(
+                f"❌ **Cannot create that path:**\n\n`{err}`\n\n"
+                "Try a different path or use /setpath to pick a preset."
+            )
+        _save_path_config(text)
+        return await message.reply(f"✅ **Download path set!**\n\n`{text}`")
 
     # ── State: selecting a chat — filter the list ──────────────
     if state == "selecting":
@@ -765,7 +893,15 @@ async def cb_page(_, query: CallbackQuery):
 
 async def _initialize() -> None:
     _load_session()
-    os.makedirs(DOWNLOAD_BASE, exist_ok=True)
+    _load_path()
+    ok, err = _try_makedirs(DOWNLOAD_BASE)
+    if not ok:
+        log.warning(
+            f"Saved path {DOWNLOAD_BASE!r} is not accessible ({err}). "
+            "Falling back to Termux home and resetting path.json."
+        )
+        _save_path_config(DEFAULT_DOWNLOAD_BASE)
+        os.makedirs(DOWNLOAD_BASE, exist_ok=True)   # Termux home always works
     log.info("Starting user client…")
     await user_client.start()
     await _load_dialogs()
@@ -802,13 +938,15 @@ async def main() -> None:
     bot.add_handler(MessageHandler(cmd_killall, filters.command("killall") & filters.private))
     bot.add_handler(MessageHandler(cmd_log,     filters.command("log")     & filters.private))
     bot.add_handler(MessageHandler(cmd_stats,   filters.command("stats")   & filters.private))
+    bot.add_handler(MessageHandler(cmd_setpath, filters.command("setpath") & filters.private))
     bot.add_handler(MessageHandler(
         handle_text,
         filters.private & filters.text
-        & ~filters.command(["start", "setchat", "help", "killall", "log", "stats"]),
+        & ~filters.command(["start", "setchat", "help", "killall", "log", "stats", "setpath"]),
     ))
     bot.add_handler(CallbackQueryHandler(cb_select_chat, filters.regex(r"^sc:\d+$")))
     bot.add_handler(CallbackQueryHandler(cb_page,        filters.regex(r"^pg:\d+")))
+    bot.add_handler(CallbackQueryHandler(cb_setpath,     filters.regex(r"^path:")))
 
     await _initialize()
     await bot.start()
