@@ -1,21 +1,47 @@
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+<div align="center">
 
-# GhostFetch
+# 👻 GhostFetch
 
-A Telegram userbot + bot combo that downloads media from restricted or private chats — channels, groups, bots — directly to your Termux storage. No web scraping, no third-party servers. Everything goes through your own Telegram account.
+[![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat&logo=python&logoColor=white)](https://python.org)
+[![Pyrogram](https://img.shields.io/badge/Pyrogram-2.x-009DFF?style=flat&logo=telegram&logoColor=white)](https://docs.pyrogram.org)
+[![Platform](https://img.shields.io/badge/Platform-Termux%20%7C%20Android-3DDC84?style=flat&logo=android&logoColor=white)](https://termux.dev)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow?style=flat)](./LICENSE)
 
-> Made by **herraChron**
+**Download media from any restricted Telegram chat**
+**directly to your Termux storage.**
+
+*No web scraping. No third-party servers. Your account, your files.*
+
+— *herraChron*
+
+</div>
 
 ---
 
 ## How it works
 
-You run two Pyrogram clients side by side:
+Two Pyrogram clients run side by side:
 
-- **User client** — your personal account session. This is what actually has access to the restricted content.
-- **Bot client** — a regular bot you control via @BotFather. This is your interface for sending commands and message IDs.
+- **User client** — your personal account session, which has access to the restricted content.
+- **Bot client** — a bot you control via @BotFather, used as your command interface.
 
-You DM your bot, pick a target chat from your dialog list, send message IDs, and the files land in your Termux home folder.
+DM your bot, pick a chat from your dialog list, send message IDs — files land in your Termux home folder.
+
+---
+
+## Features
+
+- 📥 **Download from restricted chats** — channels, groups, bots, DMs
+- 🗂 **File browser** — browse, receive, or delete downloads right from the chat (`/files`)
+- 🎬 **File-type emoji** — downloads are labelled with matching icons (🖼 🎬 🎵 🗜 📕 ...)
+- 📋 **Job queue** — send multiple batches; jobs run one after another automatically
+- ⚡ **Live progress** — real-time progress bar with percentage per file
+- 🔁 **Media groups** — handles multi-file posts in a single ID
+- 🛡 **FloodWait handling** — automatic retry on Telegram rate limits
+- 🔍 **Chat filter** — search your dialog list by typing a name
+- 💾 **Session memory** — last used chat is remembered across restarts
+- 📊 **Stats** — uptime, disk, CPU, RAM, and network I/O on demand
+- 📂 **Quick access** — "Open Files" button appears on every completed download
 
 ---
 
@@ -100,7 +126,7 @@ Open Telegram, find your bot, and send `/start`.
 
 ### Picking a chat
 
-After `/start`, the bot shows a scrollable list of every chat in your account — groups, channels, bots, DMs. Tap one to set it as the active source. You can also type part of a name to filter the list.
+After `/start`, a clean welcome screen appears with a **Continue** button if you've used the bot before, or tap **Set Chat** to pick from your full dialog list. You can type part of a name to filter the list, and page through with ⬅️ / ➡️.
 
 ### Downloading
 
@@ -115,7 +141,15 @@ Once a chat is selected, send one or more message IDs:
 
 Message IDs are the numbers in the Telegram URL (e.g. `t.me/chatname/26473`) or visible in the message info on desktop.
 
-Each batch you send becomes a job. Jobs queue up automatically — you don't have to wait for one to finish before sending the next.
+Each batch you send becomes a job. Jobs queue automatically — you don't have to wait.
+
+### File browser
+
+Use `/files` (or tap **📂 Open Files** after any download) to browse your downloads. From there you can:
+
+- Tap a file to have the bot send it back to you
+- Tap 🗑 to delete a single file
+- Delete an entire folder or wipe everything
 
 ### Commands
 
@@ -123,10 +157,13 @@ Each batch you send becomes a job. Jobs queue up automatically — you don't hav
 |---|---|
 | `/start` | Reset session, clear queue, pick a new source chat |
 | `/setchat` | Change the source chat without resetting anything else |
+| `/files` | Browse, receive, or delete downloaded files |
 | `/killall` | Cancel the active download and clear the entire queue |
 | `/stats` | Show uptime, disk usage, CPU, RAM, network I/O |
 | `/log` | Send the current session log as a file |
 | `/help` | Show the command reference |
+
+> Commands also appear in the Telegram menu bar automatically on first run.
 
 ### Where files go
 
@@ -156,7 +193,7 @@ GhostFetch/
 
 - The session string gives full access to your Telegram account. Keep your `.env` file private and never commit it. The `.gitignore` already excludes it.
 - `TgCrypto` is optional but strongly recommended — it speeds up encryption significantly on Termux hardware.
-- If you get `FloodWait` errors during large batches, the bot handles them automatically with retries. It won't spam Telegram.
+- If you get `FloodWait` errors during large batches, the bot handles them automatically with retries.
 - Downloaded IDs are deduplicated per session (cleared on `/start`), so re-sending the same ID within a session just skips it.
 
 ---
