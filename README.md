@@ -1,3 +1,5 @@
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+
 # GhostFetch
 
 A Telegram userbot + bot combo that downloads media from restricted or private chats — channels, groups, bots — directly to your Termux storage. No web scraping, no third-party servers. Everything goes through your own Telegram account.
@@ -204,4 +206,4 @@ The dialog cache loads at startup. Wait a few seconds, then send `/start` again.
 
 ## License
 
-MIT
+This project is licensed under the MIT License. See the [LICENSE](./LICENSE) file for details.
