@@ -757,7 +757,7 @@ def _folder_files_markup(folder: dict, fi: int, files: list, page: int) -> tuple
     if start + FILES_PAGE_SIZE < total:
         nav.append(InlineKeyboardButton("➡️", callback_data=f"fp:{fi}:{page + 1}"))
     buttons.append(nav)
-    buttons.append([InlineKeyboardButton("🗑 Delete", callback_data=f"fdeldir:{fi}")])
+    buttons.append([InlineKeyboardButton("🗑 Delete all", callback_data=f"fdeldir:{fi}")])
 
     header = (
         f"📁 **{folder['title']}**\n"
