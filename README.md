@@ -36,7 +36,7 @@ git clone https://github.com/herraChron/GhostFetch.git
 cd GhostFetch
 ```
 
-### 2. Install dependencies in Termux
+### 2. Install dependencies
 
 ```bash
 pkg update && pkg upgrade -y
@@ -52,29 +52,37 @@ Go to [my.telegram.org/apps](https://my.telegram.org/apps), log in, and create a
 
 Open Telegram, message [@BotFather](https://t.me/BotFather), send `/newbot`, follow the steps. Copy the **bot token**.
 
-### 5. Generate your session string
-
-```bash
-python gen_session.py
-```
-
-This will ask for your phone number and a login code, then print a `SESSION_STRING`. Copy it.
-
-### 6. Configure
+### 5. Configure
 
 ```bash
 cp .env.example .env
 nano .env
 ```
 
-Fill in all four values:
+Fill in your first three values — leave `SESSION_STRING` empty for now:
 
 ```
-API_ID=12345678
+API_ID=your_api_id_here
 API_HASH=your_api_hash_here
-BOT_TOKEN=123456:ABCdef...
-SESSION_STRING=BQA...long_string...
+BOT_TOKEN=your_bot_token_here
+SESSION_STRING=
 ```
+
+Press **CTRL+X → Y → Enter** to save.
+
+### 6. Generate your session string
+
+```bash
+python gen_session.py
+```
+
+This will ask for your phone number and a login code, then print a `SESSION_STRING`. Copy it, then open `.env` again:
+
+```bash
+nano .env
+```
+
+Paste the session string into the `SESSION_STRING=` line, then save with **CTRL+X → Y → Enter**.
 
 ### 7. Run
 
