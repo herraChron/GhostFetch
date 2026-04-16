@@ -29,7 +29,14 @@ You DM your bot, pick a target chat from your dialog list, send message IDs, and
 
 ## Setup
 
-### 1. Install dependencies in Termux
+### 1. Clone the repo
+
+```bash
+git clone https://github.com/herraChron/GhostFetch.git
+cd GhostFetch
+```
+
+### 2. Install dependencies in Termux
 
 ```bash
 pkg update && pkg upgrade -y
@@ -37,23 +44,23 @@ pkg install python git -y
 pip install -r requirements.txt
 ```
 
-### 2. Get your Telegram API credentials
+### 3. Get your Telegram API credentials
 
 Go to [my.telegram.org/apps](https://my.telegram.org/apps), log in, and create an app. Copy the **API ID** and **API Hash**.
 
-### 3. Create a bot
+### 4. Create a bot
 
 Open Telegram, message [@BotFather](https://t.me/BotFather), send `/newbot`, follow the steps. Copy the **bot token**.
 
-### 4. Generate your session string
+### 5. Generate your session string
 
 ```bash
-python tools/gen_session.py
+python gen_session.py
 ```
 
 This will ask for your phone number and a login code, then print a `SESSION_STRING`. Copy it.
 
-### 5. Configure
+### 6. Configure
 
 ```bash
 cp .env.example .env
@@ -69,7 +76,7 @@ BOT_TOKEN=123456:ABCdef...
 SESSION_STRING=BQA...long_string...
 ```
 
-### 6. Run
+### 7. Run
 
 ```bash
 python main.py
@@ -127,11 +134,10 @@ If a file with the same name already exists, it gets a `_1`, `_2` suffix instead
 GhostFetch/
 ├── main.py              # bot logic, handlers, download engine
 ├── config.py            # loads credentials from .env
+├── gen_session.py       # one-time session string generator
 ├── requirements.txt
 ├── .env.example         # credential template
-├── .gitignore
-└── tools/
-    └── gen_session.py   # one-time session string generator
+└── .gitignore
 ```
 
 ---
