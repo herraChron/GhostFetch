@@ -12,7 +12,7 @@
 
 *No web scraping. No third-party servers. Your account, your files.*
 
-— *herraChron*
+✪ *herraChron*
 
 </div>
 
@@ -33,7 +33,6 @@ DM your bot, pick a chat from your dialog list, send message IDs — files land 
 
 - 📥 **Download from restricted chats** — channels, groups, bots, DMs
 - 🗂 **File browser** — browse, receive, or delete downloads right from the chat (`/files`)
-- 🎬 **File-type emoji** — downloads are labelled with matching icons (🖼 🎬 🎵 🗜 📕 ...)
 - 📋 **Job queue** — send multiple batches; jobs run one after another automatically
 - ⚡ **Live progress** — real-time progress bar with percentage per file
 - 🔁 **Media groups** — handles multi-file posts in a single ID
