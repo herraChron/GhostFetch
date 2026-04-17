@@ -34,7 +34,7 @@ from config import PyroConf
 
 # ═══════════════════════════════════════════════════════════════
 # Configuration
-# ═══════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════��════════════════
 
 BOT_OWNER_ID = PyroConf.BOT_OWNER_ID if hasattr(PyroConf, 'BOT_OWNER_ID') else None
 WEBHOOK_URL = getattr(PyroConf, 'WEBHOOK_URL', None)
@@ -46,7 +46,7 @@ MAX_REQUESTS_PER_IP = 100
 FILE_OPERATION_TIMEOUT = 300
 MAX_FOLDER_SIZE = 10 * 1024 * 1024 * 1024
 SEARCH_LIMIT = 5000
-MAX_CONCURRENT_DOWNLOADS = 3  # Changed to support concurrent
+MAX_CONCURRENT_DOWNLOADS = 3
 PROGRESS_UPDATE_INTERVAL = 2.0
 CALLBACK_EXPIRY_TIME = 600
 
@@ -82,9 +82,9 @@ WEBHOOK_LOG_FILE = "webhooks.log"
 MAX_LOG_SIZE = 10 * 1024 * 1024
 MAX_LOG_BACKUPS = 3
 
-BANDWIDTH_LIMIT = 0  # 0 = unlimited, set KB/s to limit
+BANDWIDTH_LIMIT = 0
 RETRY_ATTEMPTS = 3
-RETRY_BACKOFF_BASE = 2  # exponential backoff multiplier
+RETRY_BACKOFF_BASE = 2
 
 BORDER_THICK = "━━━━━━━━━━━━━━━━━━━━━━━"
 BORDER_THIN = "──────────────────────"
@@ -110,7 +110,6 @@ ICON_LINK = "🔗"
 
 DOT = "•"
 ARROW = "▶"
-
 
 # ═══════════════════════════════════════════════════════════════
 # Logging
@@ -278,14 +277,13 @@ selected_chat: dict = {}
 downloaded_ids: dict = {}
 user_state: dict = {}
 search_results: dict = {}
-search_history: dict = {}  # {uid: [searches]}
-favorites: dict = {}  # {uid: [folder_ids]}
-user_preferences: dict = {}  # {uid: {theme, notifications, etc}}
+search_history: dict = {}
+user_preferences: dict = {}
 
 _job_queue: list = []
 _current_job: dict | None = None
 _worker_task: asyncio.Task | None = None
-_download_semaphore = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)  # Limit concurrent downloads
+_download_semaphore = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 
 _files_nav: dict = {}
 _user_cleanup_task: asyncio.Task | None = None
@@ -293,12 +291,12 @@ _user_rate_limits: dict = {}
 _callback_timestamps: dict = {}
 _emoji_cache: dict = {}
 _message_cache: dict = {}
-_request_cache: dict = {}  # Cache search results
-_bandwidth_throttle: dict = {}  # {uid: last_download_time}
+_request_cache: dict = {}
+_bandwidth_throttle: dict = {}
 
 _download_stats: dict = {}
-_active_downloads: dict = {}  # Track ongoing downloads
-_api_tokens: dict = {}  # {token: {user_id, created_at}}
+_active_downloads: dict = {}
+_api_tokens: dict = {}
 
 FILE_TYPES = {
     "🎬 Videos": [".mp4", ".mkv", ".avi", ".mov", ".webm", ".flv", ".ts", ".m4v", ".3gp"],
@@ -309,7 +307,6 @@ FILE_TYPES = {
     "📱 Apps": [".apk", ".xapk", ".apks", ".exe", ".msi"],
 }
 
-# HTTP client for webhooks
 http_session = None
 
 
@@ -404,24 +401,6 @@ def _generate_api_token(user_id: int) -> str:
     }
     _save_api_tokens(_api_tokens)
     return token
-
-
-def _load_favorites() -> dict:
-    """Load favorites."""
-    try:
-        with open("favorites.json", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-
-def _save_favorites(fav: dict) -> None:
-    """Save favorites."""
-    try:
-        with open("favorites.json", "w", encoding="utf-8") as f:
-            json.dump(fav, f, indent=2)
-    except Exception as e:
-        log.warning(f"Save favorites failed: {e}")
 
 
 def _load_preferences(uid: int) -> dict:
@@ -529,7 +508,6 @@ def _add_to_history(filename: str, size: int, duration: float, chat_id: int, use
         history["downloads"] = history["downloads"][-1000:]
     _save_history(history)
     
-    # Also log to analytics
     speed = size / duration if duration > 0 else 0
     _log_download(filename, size, chat_id, user_id, duration, speed)
 
@@ -729,7 +707,6 @@ def _get_file_info(filepath: str) -> dict:
         ext = os.path.splitext(filepath)[1].lower()
         if ext in [".mp4", ".mkv", ".avi", ".mov", ".webm"]:
             info["type"] = "video"
-            # Try to get duration using ffprobe
             try:
                 result = subprocess.run(
                     ["ffprobe", "-v", "error", "-show_entries", "format=duration",
@@ -756,7 +733,7 @@ def _normalize_filename(filename: str) -> str:
     return filename.lower().replace(" ", "").replace("_", "")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════���══════════════
 # Cleanup and rate limiting
 # ═══════════════════════════════════════════════════════════════
 
@@ -821,7 +798,7 @@ async def _apply_bandwidth_limit(uid: int, downloaded: int) -> None:
     if BANDWIDTH_LIMIT <= 0:
         return
     
-    target_speed = BANDWIDTH_LIMIT * 1024  # Convert KB/s to B/s
+    target_speed = BANDWIDTH_LIMIT * 1024
     elapsed = time() - _bandwidth_throttle.get(uid, time())
     
     if elapsed > 0:
@@ -1198,8 +1175,6 @@ async def _find_messages_by_name(chat_id: int, query: str) -> list:
             }
             
             log.info(f"Name search: {count} msgs, {len(matching)} matches")
-            
-            # Log search to analytics
             _log_search(0, query, len(matching))
             
             return matching
@@ -1296,7 +1271,6 @@ async def _download_file(
         entry["pct"]  = pct
         entry["name"] = label
         
-        # Apply bandwidth limiting
         await _apply_bandwidth_limit(uid, current)
 
     retry_count = 0
@@ -1317,7 +1291,6 @@ async def _download_file(
                 log.warning(f"Invalid file: {path}")
                 return None, 0
             
-            # Verify file integrity
             file_hash = _file_hash(path)
             entry["hash"] = file_hash
             
@@ -1395,7 +1368,6 @@ async def _process_id(msg_id: int, job: dict, entry: dict, chat_id: int, uid: in
         return
 
     try:
-        # Use semaphore to limit concurrent downloads
         async with _download_semaphore:
             if msg.media_group_id:
                 group       = await user_client.get_media_group(chat_id, msg_id)
@@ -1514,8 +1486,7 @@ async def _run_job(job: dict) -> None:
             
             try:
                 open_files_markup = InlineKeyboardMarkup([[
-                    InlineKeyboardButton("📂 Files", callback_data=f"openf:{folder_id}"),
-                    InlineKeyboardButton("⭐ Favorite", callback_data=f"fav:{folder_id}"),
+                    InlineKeyboardButton("📂 Open Files", callback_data=f"openf:{folder_id}"),
                 ]])
                 await _edit(j["progress_msg"], summary, reply_markup=open_files_markup)
             except Exception as e:
@@ -1526,7 +1497,6 @@ async def _run_job(job: dict) -> None:
             failed  = sum(1 for e in j["entries"] if e["status"] == "failed")
             log.info(f"Job done: {done}✓ {skipped}⊘ {failed}✗")
             
-            # Send webhook notification
             await _send_webhook("download_complete", {
                 "chat": j["chat_title"],
                 "done": done,
@@ -1652,23 +1622,44 @@ async def cmd_start(_, message: Message):
     if selected_chat.get("id"):
         title = _truncate(selected_chat['title'], BUTTON_TRUNCATE)
         buttons.append([InlineKeyboardButton(
-            f"{ARROW} Resume {ARROW} {title}",
+            f"✅ Resume: {title}",
             callback_data="welcome:resume",
         )])
-    buttons.append([
-        InlineKeyboardButton("📂 Set Chat", callback_data="welcome:setchat"),
-        InlineKeyboardButton("📖 Help", callback_data="welcome:help"),
+    buttons.extend([
+        [InlineKeyboardButton("📂 Select Chat", callback_data="welcome:setchat")],
+        [InlineKeyboardButton("📖 Help & Guide", callback_data="welcome:help")],
     ])
 
     await message.reply(
-        "GhostFetch\n"
-        "━━━━━━━━━━━\n"
-        "Media Downloader\n\n"
-        "✦ Bulk download\n"
-        "✦ Search files\n"
-        "✦ Auto-queue\n"
-        "✦ Fast & safe\n\n"
-        "Pick a chat!",
+        f"🤖 **GHOSTFETCH - Media Downloader**\n"
+        f"{BORDER_THICK}\n\n"
+        
+        f"Welcome! 👋\n"
+        f"Download media from Telegram chats effortlessly.\n\n"
+        
+        f"⚡ **Features:**\n"
+        f"  ✓ Bulk download by type (videos, audio, photos, etc)\n"
+        f"  ✓ Search files by name keyword\n"
+        f"  ✓ Download by date range\n"
+        f"  ✓ Download by file size\n"
+        f"  ✓ Manual ID selection\n"
+        f"  ✓ Concurrent downloads (3 at a time)\n"
+        f"  ✓ Pause/Resume support\n"
+        f"  ✓ Queue management\n\n"
+        
+        f"📊 **Quick Stats:**\n"
+        f"  • Chats Available: {len(dialogs_cache)}\n"
+        f"  • Active Queued Jobs: {len(_job_queue)}\n"
+        f"  • Status: {'🟢 Ready' if not _current_job else '🔴 Downloading'}\n\n"
+        
+        f"🚀 **Getting Started:**\n"
+        f"1️⃣ Tap '📂 Select Chat' to choose source\n"
+        f"2️⃣ Choose a download mode\n"
+        f"3️⃣ Follow the prompts\n"
+        f"4️⃣ Your files will be downloaded!\n\n"
+        
+        f"💡 **Tip:** Use /help for detailed command list\n"
+        f"{BORDER_THIN}",
         reply_markup=InlineKeyboardMarkup(buttons),
         disable_web_page_preview=True,
     )
@@ -1689,7 +1680,7 @@ async def cmd_setchat(_, message: Message):
 
 
 async def cb_welcome(_, query: CallbackQuery):
-    """Welcome buttons."""
+    """Welcome buttons with improved messaging."""
     uid    = query.from_user.id
     if not _is_owner(uid):
         return await query.answer("Not authorized", show_alert=True)
@@ -1707,9 +1698,10 @@ async def cb_welcome(_, query: CallbackQuery):
             return
         user_state[uid] = ("idle", time())
         await query.message.edit(
-            f"✅ **Resumed**\n\n"
-            f"{ICON_FOLDER} {_truncate(selected_chat['title'], TEXT_TRUNCATE_MED)}\n\n"
-            "What next?"
+            f"✅ **Session Resumed!**\n\n"
+            f"{ICON_FOLDER} **Chat:** {_truncate(selected_chat['title'], TEXT_TRUNCATE_MED)}\n\n"
+            f"Ready to download!\n"
+            f"What would you like to do?"
         )
         await query.answer()
         await _show_download_options(query.message, uid, is_callback=True)
@@ -1721,27 +1713,18 @@ async def cb_welcome(_, query: CallbackQuery):
 
     elif action == "help":
         await query.answer()
-        await query.message.edit(
-            f"📖 **Help**\n"
-            f"{BORDER_THIN}\n\n"
-            "**Modes:**\n"
-            "🆔 Manual ID\n"
-            f"{ICON_BULK} Bulk Type\n"
-            f"{ICON_SEARCH} Search Name\n"
-            f"📅 By Date\n"
-            f"📊 By Size\n\n"
-            "**Commands:**\n"
-            "/start /options\n"
-            "/files /stats\n"
-            "/history /settings\n"
-            "/api /killall\n"
-            "/help",
-            disable_web_page_preview=True,
-        )
+        # Call help function directly
+        await cmd_help(None, query.message)
 
 
 async def _show_download_options(msg_or_query, uid: int, is_callback: bool = False) -> None:
     """Download options."""
+    if not selected_chat.get("id"):
+        text = f"{ICON_WARN} No chat selected"
+        if hasattr(msg_or_query, "reply"):
+            await msg_or_query.reply(text)
+        return
+    
     buttons = [
         [InlineKeyboardButton("🆔 Manual ID", callback_data="dlopt:manual")],
         [InlineKeyboardButton(f"{ICON_BULK} Bulk Download", callback_data="dlopt:bulk")],
@@ -1949,30 +1932,80 @@ async def cmd_help(_, message: Message):
     _add_user_activity(uid)
     
     await message.reply(
-        f"📖 **Help**\n"
-        f"{BORDER_THIN}\n\n"
-        "**Start:**\n"
-        "1. /start\n"
-        "2. Pick chat\n"
-        "3. Choose mode\n\n"
-        "**Modes:**\n"
-        "🆔 Manual - IDs\n"
-        f"{ICON_BULK} Bulk - Type\n"
-        f"{ICON_SEARCH} Search - Name\n"
-        "📅 By Date Range\n"
-        "📊 By File Size\n\n"
-        "**Commands:**\n"
-        "/start /options\n"
-        "/files /stats\n"
-        "/history /settings\n"
-        "/api /favorites\n"
-        "/killall /help",
+        f"📖 **GHOSTFETCH HELP GUIDE**\n"
+        f"{BORDER_THICK}\n\n"
+        
+        f"🎯 **QUICK START**\n"
+        f"{BORDER_THIN}\n"
+        f"1. /start → Select a chat/channel\n"
+        f"2. /options → Choose download mode\n"
+        f"3. Send input based on selected mode\n"
+        f"4. Download starts automatically!\n\n"
+        
+        f"📥 **DOWNLOAD MODES**\n"
+        f"{BORDER_THIN}\n"
+        f"🆔 **Manual ID**\n"
+        f"   Download specific messages by ID\n"
+        f"   Usage: Send `123 456 789`\n"
+        f"   Multiple IDs separated by spaces\n\n"
+        
+        f"{ICON_BULK} **Bulk Download**\n"
+        f"   Download all files of one type\n"
+        f"   Types: Videos, Audio, Images, Docs, Archives, Apps\n"
+        f"   Searches entire chat history\n\n"
+        
+        f"{ICON_SEARCH} **Search by Name**\n"
+        f"   Find files matching keywords\n"
+        f"   Usage: Send keyword (e.g., 'movie', 'song')\n"
+        f"   Shows matching results as buttons\n\n"
+        
+        f"📅 **By Date Range**\n"
+        f"   Download files from specific dates\n"
+        f"   Usage: `2024-01-01 to 2024-12-31`\n"
+        f"   Format: YYYY-MM-DD to YYYY-MM-DD\n\n"
+        
+        f"📊 **By File Size**\n"
+        f"   Download files within size range\n"
+        f"   Usage: `10 to 500` (in MB)\n"
+        f"   Or just `100` for min size only\n\n"
+        
+        f"⚙️ **COMMANDS**\n"
+        f"{BORDER_THIN}\n"
+        f"/start - Start bot & select chat\n"
+        f"/options - Choose download mode\n"
+        f"/files - Browse downloaded files\n"
+        f"/stats - View download statistics\n"
+        f"/history - Download history\n"
+        f"/settings - User preferences\n"
+        f"/api - Generate API token\n"
+        f"/pause - Pause current download\n"
+        f"/resume - Resume paused download\n"
+        f"/queue - View download queue\n"
+        f"/killall - Stop all downloads\n"
+        f"/resetstats - Reset statistics\n"
+        f"/help - Show this help message\n\n"
+        
+        f"💡 **TIPS & TRICKS**\n"
+        f"{BORDER_THIN}\n"
+        f"→ Downloads are queued automatically\n"
+        f"→ Pause/resume at any time\n"
+        f"→ Check /queue to see pending jobs\n"
+        f"→ Use /files to manage downloads\n"
+        f"→ Concurrent downloads limit: 3\n"
+        f"→ Max folder size: 10GB\n\n"
+        
+        f"📝 **NOTES**\n"
+        f"{BORDER_THIN}\n"
+        f"✓ Only bot owner can use commands\n"
+        f"✓ Rate limit: 30 req/min, 300 req/hour\n"
+        f"✓ Files saved in: {DOWNLOAD_BASE}\n"
+        f"✓ Session auto-saved for quick resume",
         disable_web_page_preview=True,
     )
 
 
 # ═══════════════════════════════════════════════════════════════
-# Advanced Features - Settings, API, Favorites
+# Advanced Features - Settings, API
 # ═══════════════════════════════════════════════════════════════
 
 async def cmd_settings(_, message: Message):
@@ -2018,7 +2051,6 @@ async def cmd_api(_, message: Message):
     
     _add_user_activity(uid)
     
-    # Generate new token
     token = _generate_api_token(uid)
     
     text = (
@@ -2029,32 +2061,6 @@ async def cmd_api(_, message: Message):
         f"Use for REST API calls.\n"
         f"Keep it secret!"
     )
-    
-    await message.reply(text)
-
-
-async def cmd_favorites(_, message: Message):
-    """Manage favorite folders."""
-    uid = message.from_user.id
-    if not _is_owner(uid):
-        return await message.reply("Not authorized")
-    
-    allowed, msg_text = _check_rate_limit(uid)
-    if not allowed:
-        return await message.reply(msg_text)
-    
-    _add_user_activity(uid)
-    
-    global favorites
-    favorites = _load_favorites()
-    user_favs = favorites.get(str(uid), [])
-    
-    if not user_favs:
-        return await message.reply("No favorites yet. Star folders to add them!")
-    
-    text = f"⭐ **Favorites**\n\n"
-    for fid in user_favs[:10]:
-        text += f"• {_folder_title(fid)}\n"
     
     await message.reply(text)
 
@@ -2131,12 +2137,11 @@ def _scan_files_in(folder_path: str, sort_by: str = "date") -> list[dict]:
             except Exception as e:
                 log.debug(f"Error with file: {e}")
         
-        # Sort
         if sort_by == "size":
             files.sort(key=lambda x: x["size"], reverse=True)
         elif sort_by == "name":
             files.sort(key=lambda x: x["name"])
-        else:  # date
+        else:
             files.sort(key=lambda x: x["mtime"], reverse=True)
     except Exception as e:
         log.error(f"Scan error: {e}")
@@ -2145,9 +2150,6 @@ def _scan_files_in(folder_path: str, sort_by: str = "date") -> list[dict]:
 
 
 def _folders_markup(folders: list) -> tuple[str, InlineKeyboardMarkup]:
-    global favorites
-    favorites = _load_favorites()
-    
     total_files = sum(f["file_count"] for f in folders)
     total_size  = sum(f["total_size"] for f in folders)
     buttons = []
@@ -2513,35 +2515,6 @@ async def cb_delete_folder_confirm(_, query: CallbackQuery):
     await _send_folder_view(query, uid)
 
 
-async def cb_add_favorite(_, query: CallbackQuery):
-    """Add folder to favorites."""
-    uid = query.from_user.id
-    if not _is_owner(uid):
-        return await query.answer("Not authorized", show_alert=True)
-    
-    _add_user_activity(uid)
-    
-    try:
-        folder_id = query.data.split(":")[1]
-    except IndexError:
-        await query.answer("Invalid", show_alert=True)
-        return
-    
-    global favorites
-    favorites = _load_favorites()
-    uid_str = str(uid)
-    
-    if uid_str not in favorites:
-        favorites[uid_str] = []
-    
-    if folder_id not in favorites[uid_str]:
-        favorites[uid_str].append(folder_id)
-        _save_favorites(favorites)
-        await query.answer("⭐ Added to favorites")
-    else:
-        await query.answer("Already in favorites")
-
-
 async def cb_wipe_all(_, query: CallbackQuery):
     """Confirm wipe all."""
     uid = query.from_user.id
@@ -2791,7 +2764,7 @@ async def cb_back(_, query: CallbackQuery):
     await query.answer()
 
 
-# ═══════════════════════════════════════════════════════════════
+# ══════════════════════════════════════��════════════════════════
 # Download management commands
 # ═══════════════════════════════════════════════════════════════
 
@@ -3089,7 +3062,6 @@ async def handle_text(_, message: Message):
         return
 
     if state == "download_date":
-        # Parse date range
         try:
             parts = text.split(" to ")
             if len(parts) == 2:
@@ -3104,15 +3076,32 @@ async def handle_text(_, message: Message):
             if not msg_ids:
                 return await message.reply(f"{ICON_WARN} No files found")
             
-            # Create job
             entries = [{"id": mid, "status": "queued"} for mid in msg_ids]
-            # ... start job ...
+            progress_msg = await message.reply(f"{ICON_DL} **Downloading…**\n{len(msg_ids)} IDs")
+            job = {
+                "ids": msg_ids,
+                "entries": entries,
+                "chat_title": selected_chat["title"],
+                "chat_id": selected_chat["id"],
+                "user_id": uid,
+                "progress_msg": progress_msg,
+                "start_time": time(),
+                "cancelled": False,
+                "paused": False,
+                "is_bulk": False,
+                "_last_render": time(),
+            }
+            if _current_job or (_worker_task and not _worker_task.done()):
+                _job_queue.append(job)
+            else:
+                _current_job = job
+                _worker_task = asyncio.create_task(_run_job(job))
+            user_state[uid] = ("idle", time())
             
         except ValueError:
             return await message.reply("Invalid date format")
 
     if state == "download_size":
-        # Parse size range
         try:
             parts = text.split(" to ")
             if len(parts) == 2:
@@ -3128,9 +3117,27 @@ async def handle_text(_, message: Message):
             if not msg_ids:
                 return await message.reply(f"{ICON_WARN} No files found")
             
-            # Create job
             entries = [{"id": mid, "status": "queued"} for mid in msg_ids]
-            # ... start job ...
+            progress_msg = await message.reply(f"{ICON_DL} **Downloading…**\n{len(msg_ids)} IDs")
+            job = {
+                "ids": msg_ids,
+                "entries": entries,
+                "chat_title": selected_chat["title"],
+                "chat_id": selected_chat["id"],
+                "user_id": uid,
+                "progress_msg": progress_msg,
+                "start_time": time(),
+                "cancelled": False,
+                "paused": False,
+                "is_bulk": False,
+                "_last_render": time(),
+            }
+            if _current_job or (_worker_task and not _worker_task.done()):
+                _job_queue.append(job)
+            else:
+                _current_job = job
+                _worker_task = asyncio.create_task(_run_job(job))
+            user_state[uid] = ("idle", time())
             
         except ValueError:
             return await message.reply("Invalid size format")
@@ -3146,7 +3153,156 @@ async def handle_text(_, message: Message):
 # ═══════════════════════════════════════════════════════════════
 
 async def _set_bot_commands() -> None:
-    """Register commands."""
+    """Register bot commands."""
     try:
         await bot.set_bot_commands([
-            
+            BotCommand("start", "Start bot"),
+            BotCommand("options", "Download options"),
+            BotCommand("files", "Browse downloads"),
+            BotCommand("stats", "Show statistics"),
+            BotCommand("history", "Download history"),
+            BotCommand("settings", "User settings"),
+            BotCommand("api", "API token"),
+            BotCommand("pause", "Pause download"),
+            BotCommand("resume", "Resume download"),
+            BotCommand("queue", "Show queue"),
+            BotCommand("killall", "Stop all downloads"),
+            BotCommand("resetstats", "Reset statistics"),
+            BotCommand("help", "Help menu"),
+        ])
+        log.info("Bot commands registered")
+    except Exception as e:
+        log.error(f"Set commands failed: {e}")
+
+
+async def main():
+    """Main entry point - initializes and starts the bot."""
+    global bot, user_client, http_session, _user_cleanup_task, _api_tokens
+    
+    # Initialize database
+    _init_analytics_db()
+    _api_tokens = _load_api_tokens()
+    
+    try:
+        # Create clients
+        log.info("Creating Pyrogram clients...")
+        bot = Client(
+            "bot_session",
+            api_id=PyroConf.API_ID,
+            api_hash=PyroConf.API_HASH,
+            bot_token=PyroConf.BOT_TOKEN
+        )
+        user_client = Client(
+            "user_session",
+            api_id=PyroConf.API_ID,
+            api_hash=PyroConf.API_HASH,
+            session_string=PyroConf.SESSION_STRING
+        )
+        
+        # Create HTTP session for webhooks
+        http_session = aiohttp.ClientSession()
+        
+        # Start clients
+        log.info("Starting clients...")
+        await bot.start()
+        await user_client.start()
+        log.info("✅ Clients started successfully!")
+        
+        # Load data
+        _load_session()
+        await _load_dialogs()
+        await _set_bot_commands()
+        
+        # Register message handlers
+        bot.add_handler(MessageHandler(cmd_start, filters.command("start")))
+        bot.add_handler(MessageHandler(cmd_setchat, filters.command("setchat")))
+        bot.add_handler(MessageHandler(cmd_options, filters.command("options")))
+        bot.add_handler(MessageHandler(cmd_files, filters.command("files")))
+        bot.add_handler(MessageHandler(cmd_stats, filters.command("stats")))
+        bot.add_handler(MessageHandler(cmd_history, filters.command("history")))
+        bot.add_handler(MessageHandler(cmd_settings, filters.command("settings")))
+        bot.add_handler(MessageHandler(cmd_api, filters.command("api")))
+        bot.add_handler(MessageHandler(cmd_help, filters.command("help")))
+        bot.add_handler(MessageHandler(cmd_killall, filters.command("killall")))
+        bot.add_handler(MessageHandler(cmd_pause, filters.command("pause")))
+        bot.add_handler(MessageHandler(cmd_resume, filters.command("resume")))
+        bot.add_handler(MessageHandler(cmd_queue_preview, filters.command("queue")))
+        bot.add_handler(MessageHandler(cmd_resetstats, filters.command("resetstats")))
+        
+        # Register callback handlers
+        bot.add_handler(CallbackQueryHandler(cb_welcome, filters.regex("^welcome:")))
+        bot.add_handler(CallbackQueryHandler(cb_dlopt, filters.regex("^dlopt:")))
+        bot.add_handler(CallbackQueryHandler(cb_bulk_select, filters.regex("^bulk:")))
+        bot.add_handler(CallbackQueryHandler(cb_bulk_start, filters.regex("^bulkstart:")))
+        bot.add_handler(CallbackQueryHandler(cb_select_chat, filters.regex("^sc:")))
+        bot.add_handler(CallbackQueryHandler(cb_page, filters.regex("^pg:")))
+        bot.add_handler(CallbackQueryHandler(cb_open_folder, filters.regex("^fd:")))
+        bot.add_handler(CallbackQueryHandler(cb_files_page, filters.regex("^fp:")))
+        bot.add_handler(CallbackQueryHandler(cb_back_to_folders, filters.regex("^fb$")))
+        bot.add_handler(CallbackQueryHandler(cb_send_file, filters.regex("^fl:")))
+        bot.add_handler(CallbackQueryHandler(cb_delete_file, filters.regex("^fdel:")))
+        bot.add_handler(CallbackQueryHandler(cb_delete_folder, filters.regex("^fdeldir:")))
+        bot.add_handler(CallbackQueryHandler(cb_delete_folder_confirm, filters.regex("^fdeldirok:")))
+        bot.add_handler(CallbackQueryHandler(cb_wipe_all, filters.regex("^fwipe$")))
+        bot.add_handler(CallbackQueryHandler(cb_wipe_all_confirm, filters.regex("^fwipeok$")))
+        bot.add_handler(CallbackQueryHandler(cb_search_download, filters.regex("^searchdl:")))
+        bot.add_handler(CallbackQueryHandler(cb_open_files_from_job, filters.regex("^openf:")))
+        bot.add_handler(CallbackQueryHandler(cb_back, filters.regex("^back:")))
+        
+        # Text handler (catch-all)
+        bot.add_handler(MessageHandler(
+            handle_text,
+            filters.text & ~filters.command([
+                "start", "setchat", "options", "files", "stats", "history",
+                "settings", "api", "help", "killall", "pause",
+                "resume", "queue", "resetstats"
+            ])
+        ))
+        
+        # Start cleanup task
+        _user_cleanup_task = asyncio.create_task(_cleanup_task())
+        log.info("✅ Cleanup task started")
+        
+        log.info("━" * 50)
+        log.info("🤖 GhostFetch Bot is RUNNING!")
+        log.info("━" * 50)
+        
+        # Keep bot running using Event
+        stop_event = asyncio.Event()
+        await stop_event.wait()
+        
+    except Exception as e:
+        log.error(f"Fatal bot error: {e}")
+        import traceback
+        traceback.print_exc()
+        
+    finally:
+        # Cleanup on shutdown
+        log.info("Shutting down...")
+        
+        if http_session:
+            await http_session.close()
+        if _user_cleanup_task:
+            _user_cleanup_task.cancel()
+            try:
+                await _user_cleanup_task
+            except asyncio.CancelledError:
+                pass
+        if bot:
+            await bot.stop()
+        if user_client:
+            await user_client.stop()
+        
+        _save_download_db(downloaded_ids)
+        log.info("✅ Bot stopped gracefully")
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        log.info("Interrupted by user")
+    except Exception as e:
+        log.error(f"Startup error: {e}")
+        import traceback
+        traceback.print_exc()
