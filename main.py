@@ -88,6 +88,7 @@ _current_job: dict | None        = None
 _worker_task: asyncio.Task | None = None
 
 _files_nav:   dict               = {}
+_bulk_task:   asyncio.Task | None = None   # separate tracker for bulk scan/download
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -200,8 +201,63 @@ def _file_emoji(filename: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════
-# Progress renderer
+# Bulk download — type definitions & filter
 # ═══════════════════════════════════════════════════════════════
+
+BULK_TYPES = {
+    "all":      ("📥 All Files",    None),
+    "video":    ("🎬 Videos",       {".mp4", ".mkv", ".avi", ".mov", ".webm", ".flv", ".ts", ".m4v", ".wmv", ".3gp"}),
+    "audio":    ("🎵 Audio",        {".mp3", ".ogg", ".flac", ".wav", ".m4a", ".aac", ".opus", ".wma", ".amr"}),
+    "photo":    ("🖼 Photos",       {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff", ".heic"}),
+    "doc":      ("📄 Documents",    {".pdf", ".epub", ".mobi", ".djvu", ".txt", ".md", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx", ".csv", ".srt", ".sub", ".ass"}),
+    "archive":  ("📦 Archives",     {".zip", ".rar", ".7z", ".tar", ".gz", ".xz", ".bz2", ".zst"}),
+    "apk":      ("📱 APKs",         {".apk", ".xapk", ".apks", ".aab"}),
+    "sticker":  ("🎭 Stickers",     {".webp", ".tgs"}),
+}
+
+
+def _msg_matches_type(msg, filter_type: str) -> bool:
+    """Return True if this message has media matching the given filter_type."""
+    if filter_type == "all":
+        return bool(msg.media)
+
+    exts = BULK_TYPES[filter_type][1]
+
+    if filter_type == "sticker":
+        return bool(msg.sticker)
+
+    if filter_type == "photo":
+        if msg.photo:
+            return True
+        if msg.document and msg.document.mime_type and msg.document.mime_type.startswith("image/"):
+            return True
+        return False
+
+    if filter_type == "video":
+        if msg.video or msg.video_note:
+            return True
+        if msg.document:
+            ext = os.path.splitext(msg.document.file_name or "")[1].lower()
+            return ext in exts
+        return False
+
+    if filter_type == "audio":
+        if msg.audio or msg.voice:
+            return True
+        if msg.document:
+            ext = os.path.splitext(msg.document.file_name or "")[1].lower()
+            return ext in exts
+        return False
+
+    # doc, archive, apk — document-based
+    if msg.document:
+        ext = os.path.splitext(msg.document.file_name or "")[1].lower()
+        return ext in exts
+
+    return False
+
+
+
 
 _STATUS_ICON = {
     "queued":      "⏸",
@@ -504,6 +560,134 @@ async def _run_job(job: dict) -> None:
         _worker_task = None
 
 
+async def _run_bulk_job(chat_id, chat_title: str, filter_type: str, progress_msg) -> None:
+    """
+    Scan the entire chat history, download every message matching filter_type.
+    Runs independently from the normal job queue.
+    """
+    global _bulk_task
+
+    type_label = BULK_TYPES[filter_type][0]
+    scanned    = 0
+    found      = 0
+    done       = 0
+    failed     = 0
+    skipped    = 0
+    start_time = time()
+    last_edit  = [0.0]
+
+    folder_id = str(chat_id).replace("-100", "")
+    _save_chat_name(folder_id, chat_title)
+
+    async def _update(final: bool = False):
+        now = time()
+        if not final and now - last_edit[0] < 2.0:
+            return
+        last_edit[0] = now
+        status = "✅ Done" if final else "⏳ Running"
+        text = (
+            f"🔍 **Bulk Download** {DOT} {type_label}\n"
+            f"{ICON_FOLDER} `{chat_title}`\n"
+            f"{BORDER}\n"
+            f"📨 Scanned: `{scanned}`\n"
+            f"🎯 Matched: `{found}`\n"
+            f"✅ Done: `{done}`  ❌ Failed: `{failed}`  ⏭ Skipped: `{skipped}`\n"
+            f"{ICON_CLOCK} `{_elapsed(start_time)}`\n\n"
+            f"_{status}_"
+        )
+        try:
+            await progress_msg.edit(text)
+        except Exception:
+            pass
+
+    try:
+        async for msg in user_client.get_chat_history(chat_id):
+            # Check if cancelled
+            if asyncio.current_task().cancelled():
+                raise asyncio.CancelledError()
+
+            scanned += 1
+            await _update()
+
+            if not _msg_matches_type(msg, filter_type):
+                continue
+
+            found += 1
+
+            # Skip already-downloaded in this session
+            if msg.id in downloaded_ids:
+                skipped += 1
+                continue
+
+            try:
+                fname = _filename(msg)
+                path  = _save_path(chat_id, fname)
+
+                await msg.download(file_name=path)
+
+                size = os.path.getsize(path) if os.path.exists(path) else 0
+                downloaded_ids.add(msg.id)
+                done += 1
+                log.info(f"Bulk saved: {path} ({_sz(size)})")
+
+            except asyncio.CancelledError:
+                raise
+            except FloodWait as e:
+                log.warning(f"Bulk FloodWait {e.value}s")
+                await asyncio.sleep(e.value + 1)
+                # retry
+                try:
+                    await msg.download(file_name=path)
+                    downloaded_ids.add(msg.id)
+                    done += 1
+                except Exception as e2:
+                    log.error(f"Bulk retry failed: {e2}")
+                    failed += 1
+            except Exception as e:
+                log.error(f"Bulk download error msg {msg.id}: {e}")
+                failed += 1
+
+    except asyncio.CancelledError:
+        await progress_msg.edit(
+            f"🛑 **Bulk Download Cancelled**\n"
+            f"{ICON_FOLDER} `{chat_title}` {DOT} {type_label}\n"
+            f"{BORDER}\n"
+            f"📨 Scanned: `{scanned}` {DOT} 🎯 Matched: `{found}`\n"
+            f"✅ `{done}` done  ❌ `{failed}` failed\n"
+            f"{ICON_CLOCK} `{_elapsed(start_time)}`"
+        )
+        return
+
+    except Exception as e:
+        log.error(f"Bulk job error: {e}")
+        await progress_msg.edit(f"❌ **Bulk Download Error**\n\n`{e}`")
+        return
+
+    finally:
+        _bulk_task = None
+
+    await _update(final=True)
+
+    # Show open files button
+    markup = InlineKeyboardMarkup([[
+        InlineKeyboardButton("📂 Open Files", callback_data=f"openf:{folder_id}")
+    ]])
+    try:
+        await progress_msg.edit(
+            f"✅ **Bulk Download Complete**\n"
+            f"{ICON_FOLDER} `{chat_title}` {DOT} {type_label}\n"
+            f"{BORDER}\n"
+            f"📨 Scanned: `{scanned}` {DOT} 🎯 Matched: `{found}`\n"
+            f"✅ `{done}` done  ❌ `{failed}` failed  ⏭ `{skipped}` skipped\n"
+            f"{ICON_CLOCK} `{_elapsed(start_time)}`",
+            reply_markup=markup,
+        )
+    except Exception:
+        pass
+
+    log.info(f"Bulk done — scanned={scanned} found={found} done={done} failed={failed}")
+
+
 # ═══════════════════════════════════════════════════════════════
 # Command handlers
 # ═══════════════════════════════════════════════════════════════
@@ -622,12 +806,23 @@ async def cb_welcome(_, query: CallbackQuery):
             await query.answer("No previous session.", show_alert=True)
             return
         user_state[uid] = "idle"
+        markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📥 Download All",   callback_data="dlmode:all"),
+             InlineKeyboardButton("✏️ Manual IDs",     callback_data="dlmode:manual")],
+            [InlineKeyboardButton("🎬 Videos",          callback_data="dlmode:video"),
+             InlineKeyboardButton("🎵 Audio",           callback_data="dlmode:audio")],
+            [InlineKeyboardButton("🖼 Photos",          callback_data="dlmode:photo"),
+             InlineKeyboardButton("📄 Documents",       callback_data="dlmode:doc")],
+            [InlineKeyboardButton("📦 Archives",        callback_data="dlmode:archive"),
+             InlineKeyboardButton("📱 APKs",            callback_data="dlmode:apk")],
+            [InlineKeyboardButton("🎭 Stickers",        callback_data="dlmode:sticker")],
+        ])
         await query.message.edit(
             f"{ICON_SUCCESS} **Session Resumed**\n\n"
             f"{ICON_FOLDER} `{selected_chat['title']}`\n"
             f"🆔 `{selected_chat['id']}`\n\n"
-            "Send message IDs to download:\n"
-            "`26473` or `26473 26570`"
+            "Choose what to download:",
+            reply_markup=markup,
         )
         await query.answer()
 
@@ -963,18 +1158,26 @@ async def cb_wipe_all_confirm(_, query: CallbackQuery):
 
 
 async def cmd_killall(_, message: Message):
-    global _worker_task, _current_job, _job_queue
+    global _worker_task, _current_job, _job_queue, _bulk_task
 
-    if not (_worker_task and not _worker_task.done()) and not _job_queue:
+    nothing_running = (
+        not (_worker_task and not _worker_task.done())
+        and not _job_queue
+        and not (_bulk_task and not _bulk_task.done())
+    )
+    if nothing_running:
         return await message.reply(f"{ICON_INFO} Nothing running")
 
     if _current_job:
         _current_job["cancelled"] = True
     if _worker_task and not _worker_task.done():
         _worker_task.cancel()
+    if _bulk_task and not _bulk_task.done():
+        _bulk_task.cancel()
 
     _worker_task = None
     _current_job = None
+    _bulk_task   = None
     _job_queue.clear()
 
     await message.reply(f"🛑 **Stopped** {DOT} Queue cleared")
@@ -1098,6 +1301,52 @@ async def handle_text(_, message: Message):
     _worker_task = asyncio.create_task(_run_job(job))
 
 
+async def cb_dlmode(_, query: CallbackQuery):
+    """Handle download mode selection buttons."""
+    global _bulk_task
+
+    uid         = query.from_user.id
+    filter_type = query.data.split(":")[1]
+
+    if not selected_chat.get("id"):
+        await query.answer("No chat selected.", show_alert=True)
+        return
+
+    if filter_type == "manual":
+        await query.message.edit(
+            f"{ICON_SUCCESS} **Ready**\n\n"
+            f"{ICON_FOLDER} `{selected_chat['title']}`\n\n"
+            "Send me message IDs to download:\n"
+            "`26473`  or  `26473 26570 26600`"
+        )
+        await query.answer()
+        return
+
+    # Bulk download — check nothing is already running
+    if _bulk_task and not _bulk_task.done():
+        await query.answer("⚠️ A bulk download is already running. Use /killall to stop it.", show_alert=True)
+        return
+
+    type_label = BULK_TYPES[filter_type][0]
+    await query.answer(f"Starting {type_label}…")
+
+    progress_msg = await query.message.reply(
+        f"🔍 **Bulk Download Starting…**\n"
+        f"{ICON_FOLDER} `{selected_chat['title']}`\n"
+        f"Type: {type_label}\n\n"
+        "_Scanning chat history…_"
+    )
+
+    _bulk_task = asyncio.create_task(
+        _run_bulk_job(
+            selected_chat["id"],
+            selected_chat["title"],
+            filter_type,
+            progress_msg,
+        )
+    )
+
+
 async def cb_select_chat(_, query: CallbackQuery):
     global selected_chat
 
@@ -1115,11 +1364,24 @@ async def cb_select_chat(_, query: CallbackQuery):
     user_state[uid] = "idle"
     search_results.pop(uid, None)
 
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📥 Download All",   callback_data="dlmode:all"),
+         InlineKeyboardButton("✏️ Manual IDs",     callback_data="dlmode:manual")],
+        [InlineKeyboardButton("🎬 Videos",          callback_data="dlmode:video"),
+         InlineKeyboardButton("🎵 Audio",           callback_data="dlmode:audio")],
+        [InlineKeyboardButton("🖼 Photos",          callback_data="dlmode:photo"),
+         InlineKeyboardButton("📄 Documents",       callback_data="dlmode:doc")],
+        [InlineKeyboardButton("📦 Archives",        callback_data="dlmode:archive"),
+         InlineKeyboardButton("📱 APKs",            callback_data="dlmode:apk")],
+        [InlineKeyboardButton("🎭 Stickers",        callback_data="dlmode:sticker")],
+    ])
+
     await query.message.edit(
         f"{ICON_SUCCESS} **Chat Set**\n\n"
         f"{ICON_FOLDER} `{chosen['title']}`\n"
         f"🆔 `{chosen['id']}`\n\n"
-        "Send message IDs to download"
+        "Choose what to download:",
+        reply_markup=markup,
     )
     await query.answer()
     log.info(f"Chat: {chosen['title']}")
@@ -1226,6 +1488,7 @@ async def main() -> None:
     bot.add_handler(CallbackQueryHandler(cb_select_chat,           filters.regex(r"^sc:\d+$")))
     bot.add_handler(CallbackQueryHandler(cb_page,                  filters.regex(r"^pg:\d+")))
     bot.add_handler(CallbackQueryHandler(cb_welcome,               filters.regex(r"^welcome:")))
+    bot.add_handler(CallbackQueryHandler(cb_dlmode,                filters.regex(r"^dlmode:")))
     bot.add_handler(CallbackQueryHandler(cb_open_files_from_job,   filters.regex(r"^openf:")))
     bot.add_handler(CallbackQueryHandler(cb_open_folder,           filters.regex(r"^fd:\d+$")))
     bot.add_handler(CallbackQueryHandler(cb_files_page,            filters.regex(r"^fp:\d+:\d+$")))
