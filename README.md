@@ -12,6 +12,8 @@
 
 *No web scraping. No third-party servers. Your account, your files.*
 
+> 🚧 **This project is still actively being developed. More features and updates are on the way.**
+
 ✪ *herraChron*
 
 </div>
