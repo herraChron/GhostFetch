@@ -25,7 +25,7 @@ from config import PyroConf
 # Constants
 # ───────────────────────────────────────────────────────────────
 
-DOWNLOAD_BASE       = "/data/data/com.termux/files/home/GhostFetch/downloads"
+DOWNLOAD_BASE       = os.path.join(os.path.expanduser("~"), "GhostFetch", "downloads")
 SESSION_FILE        = "session.json"
 CHAT_NAMES_FILE     = "chat_names.json"
 DOWNLOADED_IDS_FILE = "downloaded_ids.json"     # MOD-18
@@ -1911,8 +1911,8 @@ async def _set_bot_commands() -> None:
 async def main() -> None:
     global bot, user_client
 
-    # MOD-28: workers reduced to 4 for single-user Termux deployment.
-    # Increase if running on a server with multiple users.
+    # MOD-28: workers set to 4; suitable for single-user use on any platform.
+    # Increase if running on a server with multiple concurrent users.
     bot = Client(
         "bot_session",
         api_id=PyroConf.API_ID,
