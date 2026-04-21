@@ -31,7 +31,10 @@ DM your bot, pick a chat from your dialog list, choose a download mode — files
 
 ---
 
-## Features
+<details>
+<summary><b>✨ Features</b></summary>
+
+<br>
 
 - 📥 **Download from restricted chats** — channels, groups, bots, DMs
 - 🔢 **Manual ID mode** — send one or more message IDs to download specific files
@@ -47,6 +50,8 @@ DM your bot, pick a chat from your dialog list, choose a download mode — files
 - 🔒 **User whitelist** — restrict bot access to specific Telegram user IDs
 - 📊 **Stats** — uptime, disk, CPU, RAM, network I/O, and total files downloaded on demand
 - 📂 **Quick access** — "Open Files" button appears on every completed download
+
+</details>
 
 ---
 
@@ -73,11 +78,10 @@ cd GhostFetch
 
 ### 2. Install dependencies
 
-Choose the instructions for your operating system.
+<details>
+<summary><b>🤖 Android (Termux)</b></summary>
 
----
-
-#### 🤖 Android (Termux)
+<br>
 
 Install [Termux from F-Droid](https://f-droid.org/packages/com.termux/) (recommended over the Play Store build).
 
@@ -87,9 +91,14 @@ pkg install python git -y
 pip install -r requirements.txt
 ```
 
----
+</details>
 
-#### 🐧 Linux (Debian / Ubuntu)
+<details>
+<summary><b>🐧 Linux</b></summary>
+
+<br>
+
+**Debian / Ubuntu:**
 
 ```bash
 sudo apt update && sudo apt upgrade -y
@@ -97,7 +106,7 @@ sudo apt install python3 python3-pip git -y
 pip3 install -r requirements.txt
 ```
 
-For Arch-based distros (Manjaro, EndeavourOS, etc.):
+**Arch-based (Manjaro, EndeavourOS, etc.):**
 
 ```bash
 sudo pacman -Syu
@@ -105,7 +114,7 @@ sudo pacman -S python python-pip git
 pip install -r requirements.txt
 ```
 
-For Fedora / RHEL-based distros:
+**Fedora / RHEL-based:**
 
 ```bash
 sudo dnf update -y
@@ -113,9 +122,12 @@ sudo dnf install python3 python3-pip git -y
 pip3 install -r requirements.txt
 ```
 
----
+</details>
 
-#### 🍎 macOS
+<details>
+<summary><b>🍎 macOS</b></summary>
+
+<br>
 
 Make sure you have [Homebrew](https://brew.sh) installed, then run:
 
@@ -131,9 +143,12 @@ If you do not have Homebrew, install it first:
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 ```
 
----
+</details>
 
-#### 🪟 Windows
+<details>
+<summary><b>🪟 Windows</b></summary>
+
+<br>
 
 1. Download and install [Python 3.11+](https://www.python.org/downloads/windows/) — make sure to check **"Add Python to PATH"** during setup.
 2. Download and install [Git for Windows](https://git-scm.com/download/win).
@@ -143,7 +158,9 @@ If you do not have Homebrew, install it first:
 pip install -r requirements.txt
 ```
 
-> **Tip:** On Windows, it is recommended to run GhostFetch inside [Windows Terminal](https://aka.ms/terminal) or [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) for a better experience.
+> **Tip:** It is recommended to run GhostFetch inside [Windows Terminal](https://aka.ms/terminal) or [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) for a better experience.
+
+</details>
 
 ---
 
@@ -221,7 +238,10 @@ Tap **Select Chat** (or use `/setchat`) to browse your full dialog list. Type pa
 
 Once a chat is selected, open `/options` (or tap the download mode picker) to choose how to download:
 
-**Manual IDs**
+<details>
+<summary><b>🔢 Manual IDs</b></summary>
+
+<br>
 
 Send one or more space-separated message IDs:
 
@@ -234,11 +254,21 @@ Send one or more space-separated message IDs:
 
 Message IDs appear in the Telegram URL (e.g. `t.me/chatname/26473`) or in the message info panel on desktop.
 
-**Search by Filename**
+</details>
+
+<details>
+<summary><b>🔍 Search by Filename</b></summary>
+
+<br>
 
 Type a keyword after selecting this mode. The bot scans up to 5,000 recent messages for matching filenames and shows results as inline buttons. Tap a single result or download all matches at once.
 
-**Bulk Download**
+</details>
+
+<details>
+<summary><b>📦 Bulk Download</b></summary>
+
+<br>
 
 Pick a file type from the menu:
 
@@ -252,6 +282,8 @@ Pick a file type from the menu:
 | 📱 Apps | apk, xapk, apks |
 
 The bot will scan the entire chat history and download every matching file. A live progress bar shows scanned messages, matched files, bytes downloaded, and elapsed time. A **Cancel Download** button lets you stop at any point.
+
+</details>
 
 ### Job queue
 
@@ -311,7 +343,10 @@ GhostFetch/
 
 ---
 
-## Notes
+<details>
+<summary><b>📝 Notes</b></summary>
+
+<br>
 
 - The session string gives full access to your Telegram account. Keep your `.env` file private and never commit it. The `.gitignore` already excludes it.
 - `TgCrypto` is optional but strongly recommended — it speeds up encryption significantly on all platforms.
@@ -320,6 +355,8 @@ GhostFetch/
 - To restrict bot access to specific users, add a list of Telegram user IDs to `ALLOWED_USER_IDS` in `config.py`. An empty list (the default) allows any user to interact with the bot.
 - The bot is optimised for single-user deployments (4 async workers). If you move it to a server with multiple simultaneous users, increase the `workers` value in `main()`.
 - On Windows, if `python` is not recognised in your terminal, try `py` instead, or verify that Python was added to your PATH during installation.
+
+</details>
 
 ---
 
