@@ -89,8 +89,9 @@ downloaded_ids: set              = set()
 user_state:     dict             = {}
 search_results: dict             = {}
 
-# PERF-02: deque for O(1) popleft
-_job_queue:     deque            = deque()
+# PERF-03: asyncio.Queue for async-safe producer/consumer + parallel registry for display/cancel
+_job_queue:     asyncio.Queue    = asyncio.Queue()
+_job_registry:  dict[str, dict]  = {}              # PERF-03: keyed by job_id
 _current_job:   dict | None      = None
 _worker_task:   asyncio.Task | None = None
 _bulk_task:     asyncio.Task | None = None
@@ -99,12 +100,15 @@ _files_nav:     dict             = {}
 _fname_results: dict             = {}
 
 file_hashes:    set              = set()           # MOD-34
+known_unique_ids: set            = set()           # PERF-05: Telegram file_unique_id cache
 _adaptive_delay: dict[int, float] = {}             # ARCH-02: per-chat adaptive delay
 _speed_samples:  deque           = deque(maxlen=30) # PERF-02
 _job_history:    deque           = deque(maxlen=15) # PERF-02
 _bulk_owner_uid: int | None      = None            # FIX-06
 _disk_sentinel_task: asyncio.Task | None = None    # MOD-40
 _cached_state_hash: str          = ""              # PERF-07
+
+UNIQUE_IDS_FILE = "unique_ids.json"                # PERF-05: persistence
 
 
 # ───────────────────────────────────────────────────────────────
@@ -265,6 +269,39 @@ def _register_file_hash(path: str) -> bool:
     return True
 
 
+# ── PERF-05: Telegram file_unique_id pre-download dedup ──────
+
+def _load_unique_ids() -> None:
+    global known_unique_ids
+    try:
+        with open(UNIQUE_IDS_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        known_unique_ids = set(data) if isinstance(data, list) else set()
+        log.info(f"Loaded {len(known_unique_ids)} unique IDs from disk")
+    except FileNotFoundError:
+        known_unique_ids = set()
+    except Exception as e:
+        log.warning(f"unique_ids load failed: {e}")
+
+
+def _register_unique_id(msg) -> bool:
+    """Check and register Telegram file_unique_id. Returns True if new, False if duplicate."""
+    media_obj = msg.document or msg.video or msg.audio or msg.photo or msg.voice or msg.animation
+    uid = getattr(media_obj, "file_unique_id", None)
+    if not uid:
+        return True
+    if uid in known_unique_ids:
+        log.info(f"Pre-download duplicate detected: {uid}")
+        return False
+    known_unique_ids.add(uid)
+    try:
+        with open(UNIQUE_IDS_FILE, "w", encoding="utf-8") as f:
+            json.dump(list(known_unique_ids), f)
+    except Exception as e:
+        log.warning(f"unique_ids save failed: {e}")
+    return True
+
+
 # ── MOD-39: ETA calibration ──────────────────────────────────
 
 def _load_job_history() -> None:
@@ -363,10 +400,14 @@ def _save_state_hash() -> None:
         log.warning(f"State hash save failed: {e}")
 
 
-# ── MOD-35: Audit trail ───────────────────────────────────────
+# ── MOD-35 + SEC-02: Audit trail (HMAC-SHA256 tamper-evident chain) ──
+
+import hmac as _hmac_mod
+
 
 def _audit_log(action: str, details: dict) -> None:
-    """Append a tamper-evident entry to the audit log (SHA-256 chained)."""
+    """Append a tamper-evident entry using HMAC-SHA256 (SEC-02).
+    Falls back to plain SHA-256 chain if AUDIT_SECRET is not configured."""
     try:
         prev_hash = "0" * 64
         if os.path.exists(AUDIT_FILE):
@@ -379,7 +420,16 @@ def _audit_log(action: str, details: dict) -> None:
             "prev":    prev_hash,
         }
         raw = json.dumps(entry, ensure_ascii=False)
-        entry["hash"] = hashlib.sha256((prev_hash + raw).encode()).hexdigest()
+        # SEC-02: HMAC-SHA256 if secret is configured, else plain hash chain
+        secret = getattr(PyroConf, "AUDIT_SECRET", None)
+        if secret:
+            entry["hmac"] = _hmac_mod.new(
+                secret.encode(),
+                (prev_hash + raw).encode(),
+                "sha256",
+            ).hexdigest()
+        else:
+            entry["hash"] = hashlib.sha256((prev_hash + raw).encode()).hexdigest()
         with open(AUDIT_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except Exception as e:
@@ -693,7 +743,7 @@ def _render_job(job: dict) -> str:
         eta_str = ""
 
     # UX-05: show queue depth
-    q_note = f"\n📋 {len(_job_queue)} job(s) waiting" if _job_queue else ""
+    q_note = f"\n📋 {_job_queue.qsize()} job(s) waiting" if not _job_queue.empty() else ""
 
     header = f"📥 **{_trunc(job['chat_title'], 28)}**"
     return _truncate_msg(
@@ -973,6 +1023,12 @@ async def _process_id(msg_id: int, job: dict, entry: dict, chat: dict) -> None:
         entry["reason"] = "Not found"
         return
 
+    # PERF-05: pre-download dedup via Telegram file_unique_id (saves downloading bytes)
+    if not _register_unique_id(msg):
+        entry["status"] = "skipped"
+        entry["reason"] = "Duplicate (pre-check)"
+        return
+
     try:
         if msg.media_group_id:
             group = await user_client.get_media_group(chat_id, msg_id)
@@ -1029,6 +1085,22 @@ async def _process_id(msg_id: int, job: dict, entry: dict, chat: dict) -> None:
         _persist_downloaded_id(msg_id)
         entry["status"] = "done"
         _download_success(chat_id)                 # ARCH-02: per-chat delay
+
+        # ARCH-04: inline disk check every 50 MB to catch full disk faster than sentinel
+        file_sz = entry.get("size", 0)
+        accrued = job.get("_bytes_since_disk_check", 0) + file_sz
+        if accrued >= 50 * 1024 * 1024:
+            job["_bytes_since_disk_check"] = 0
+            try:
+                root = DOWNLOAD_BASE if os.path.exists(DOWNLOAD_BASE) else "."
+                _, _, free = shutil.disk_usage(root)
+                if free / (1024 * 1024) < DISK_LOW_MB:
+                    log.warning("Inline disk check: disk low — cancelling job")
+                    job["cancelled"] = True
+            except Exception:
+                pass
+        else:
+            job["_bytes_since_disk_check"] = accrued
 
     except asyncio.CancelledError:
         entry["status"] = "failed"
@@ -1087,7 +1159,7 @@ async def _run_job(job: dict) -> None:
         finally:
             folder_id = str(chat.get("id", "")).replace("-100", "")
             folder    = os.path.join(DOWNLOAD_BASE, folder_id)
-            q_left    = len(_job_queue)
+            q_left    = _job_queue.qsize()           # PERF-03
             q_note    = f"\n{q_left} more job(s) queued" if q_left else ""
             summary   = _render_job_summary(j) + f"\n{folder}" + q_note
 
@@ -1108,20 +1180,34 @@ async def _run_job(job: dict) -> None:
             ]])
             await _edit(j["progress_msg"], summary, reply_markup=markup)
             log.info(f"Job done: {done_n}✓ failed={failed_n}")
+            _job_registry.pop(j.get("job_id", ""), None)   # PERF-03: remove from registry
 
     try:
         await _execute(job)
-        while _job_queue:
-            nxt = _job_queue.popleft()             # PERF-02: O(1)
+        # PERF-03: drain asyncio.Queue; skip pre-cancelled jobs
+        while not _job_queue.empty():
+            try:
+                nxt = _job_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if nxt.get("cancelled"):
+                _job_registry.pop(nxt.get("job_id", ""), None)
+                continue
             await _edit(nxt["progress_msg"], "starting…")
             await _execute(nxt)
     except asyncio.CancelledError:
-        for pending in _job_queue:
+        # Cancel all remaining queued jobs
+        while not _job_queue.empty():
+            try:
+                pending = _job_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
             for e in pending["entries"]:
                 e["status"] = "failed"
                 e["reason"] = "Cancelled"
             await _edit(pending["progress_msg"], "Cancelled")
-        _job_queue.clear()
+            _job_registry.pop(pending.get("job_id", ""), None)
+        _job_registry.clear()
     finally:
         _current_job = None
         _worker_task = None
@@ -1546,7 +1632,7 @@ def _welcome_text(status: str, uid: int = 0) -> str:
         f"**GhostFetch**\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"{chat_line}"
-        f"**{len(dialogs_cache)}** chats · **{len(_job_queue)}** queued · {status}\n"
+        f"**{len(dialogs_cache)}** chats · **{_job_queue.qsize()}** queued · {status}\n"
         f"{integrity}"
     )
 
@@ -1579,7 +1665,11 @@ async def cmd_start(_, message: Message):
             reply_markup=markup,
         )
 
-    _job_queue.clear()
+    # PERF-03: drain asyncio.Queue and clear registry
+    while not _job_queue.empty():
+        try: _job_queue.get_nowait()
+        except asyncio.QueueEmpty: break
+    _job_registry.clear()
     user_state[uid] = "idle"
 
     await message.reply(
@@ -1656,7 +1746,9 @@ async def cmd_queue(_, message: Message):
     uid = message.from_user.id
     if not _authorized(uid):
         return await message.reply("⛔ Unauthorized.")
-    if not _job_queue and not _current_job:
+    # PERF-03: use _job_registry for display (asyncio.Queue is not iterable)
+    pending_jobs = [j for j in _job_registry.values() if not j.get("cancelled")]
+    if not pending_jobs and not _current_job:
         return await message.reply(
             "No jobs in queue.",
             reply_markup=_home_markup(),
@@ -1668,12 +1760,12 @@ async def cmd_queue(_, message: Message):
         done  = sum(1 for e in _current_job["entries"] if e["status"] == "done")
         total = len(_current_job["entries"])
         lines.append(f"▶ **{_trunc(_current_job['chat_title'], 24)}** · {done}/{total}")
-    for i, j in enumerate(_job_queue, 1):
+    for i, j in enumerate(pending_jobs, 1):
         lines.append(f"{i}. **{_trunc(j['chat_title'], 24)}** · {len(j['entries'])} IDs")
         buttons.append([InlineKeyboardButton(
             f"Cancel Job {i}", callback_data=f"qcancel:{j['job_id']}"
         )])
-    if _job_queue:
+    if pending_jobs:
         buttons.append([InlineKeyboardButton("Cancel All", callback_data="qcancelall")])
     buttons.append([InlineKeyboardButton("🏠 Home", callback_data="home:")])
     await message.reply(
@@ -1683,13 +1775,13 @@ async def cmd_queue(_, message: Message):
 
 
 async def cmd_killall(_, message: Message):
-    global _worker_task, _current_job, _job_queue, _bulk_task, _bulk_state
+    global _worker_task, _current_job, _bulk_task, _bulk_state
     uid = message.from_user.id
     if not _authorized(uid):
         return await message.reply("⛔ Unauthorized.")
     nothing = (
         not (_worker_task and not _worker_task.done())
-        and not _job_queue
+        and _job_queue.empty()
         and not (_bulk_task and not _bulk_task.done())
     )
     if nothing:
@@ -1707,7 +1799,11 @@ async def cmd_killall(_, message: Message):
     _worker_task = None
     _current_job = None
     _bulk_task   = None
-    _job_queue.clear()
+    # PERF-03: drain asyncio.Queue and clear registry
+    while not _job_queue.empty():
+        try: _job_queue.get_nowait()
+        except asyncio.QueueEmpty: break
+    _job_registry.clear()
     await message.reply(
         "Stopped. All jobs cleared.",
         reply_markup=_home_markup(),
@@ -1763,7 +1859,7 @@ async def cmd_stats(_, message: Message):
         f"**📊 Stats**\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"Downloads: **{total_dl}** files  ·  Storage: **{storage}**\n"
-        f"Active job: **{'yes' if _current_job else 'no'}**  ·  Queue: **{len(_job_queue)}** waiting\n"
+        f"Active job: **{'yes' if _current_job else 'no'}**  ·  Queue: **{_job_queue.qsize()}** waiting\n"
         f"⏱ Uptime: **{uptime}**\n\n"
         f"**Top downloads**\n{top}",
         reply_markup=markup,
@@ -2092,13 +2188,15 @@ async def cb_job_cancel(_, query: CallbackQuery):
         if _worker_task and not _worker_task.done():
             _worker_task.cancel()
         return await query.answer("Cancelling…")
-    to_remove = next((j for j in _job_queue if j.get("job_id") == job_id), None)
-    if to_remove:
-        _job_queue.remove(to_remove)
-        for e in to_remove["entries"]:
+    # PERF-03: mark cancelled in registry; worker skips it when dequeued
+    to_cancel = _job_registry.get(job_id)
+    if to_cancel:
+        to_cancel["cancelled"] = True
+        for e in to_cancel["entries"]:
             e["status"] = "failed"
             e["reason"] = "Cancelled"
-        await _edit(to_remove["progress_msg"], "Cancelled")
+        await _edit(to_cancel["progress_msg"], "Cancelled")
+        _job_registry.pop(job_id, None)
         await query.answer("Cancelled")
     else:
         await query.answer("Job not found.", show_alert=True)
@@ -2117,7 +2215,7 @@ async def cb_bulk_ctrl(_, query: CallbackQuery):
 
 
 async def cb_confirm_reset(_, query: CallbackQuery):
-    global _current_job, _worker_task, _job_queue
+    global _current_job, _worker_task
     uid    = query.from_user.id
     if not _authorized(uid):
         return await query.answer("⛔ Unauthorized.", show_alert=True)
@@ -2133,7 +2231,11 @@ async def cb_confirm_reset(_, query: CallbackQuery):
         _worker_task.cancel()
     _worker_task = None
     _current_job = None
-    _job_queue.clear()
+    # PERF-03: drain queue + clear registry
+    while not _job_queue.empty():
+        try: _job_queue.get_nowait()
+        except asyncio.QueueEmpty: break
+    _job_registry.clear()
     user_state[uid] = "idle"
     await query.answer()
     status = "idle"
@@ -2146,17 +2248,20 @@ async def cb_confirm_reset(_, query: CallbackQuery):
 async def cb_queue_cancel(_, query: CallbackQuery):
     if not _authorized(query.from_user.id):
         return await query.answer("⛔ Unauthorized.", show_alert=True)
-    job_id    = query.data.split(":")[1]
-    to_remove = next((j for j in _job_queue if j.get("job_id") == job_id), None)
-    if not to_remove:
+    job_id   = query.data.split(":")[1]
+    # PERF-03: mark cancelled in registry; worker skips it on dequeue
+    to_cancel = _job_registry.get(job_id)
+    if not to_cancel:
         return await query.answer("Job not found or already started.", show_alert=True)
-    _job_queue.remove(to_remove)
-    for e in to_remove["entries"]:
+    to_cancel["cancelled"] = True
+    for e in to_cancel["entries"]:
         e["status"] = "failed"
         e["reason"] = "Cancelled"
-    await _edit(to_remove["progress_msg"], "Cancelled")
+    await _edit(to_cancel["progress_msg"], "Cancelled")
+    _job_registry.pop(job_id, None)
     await query.answer("Job removed from queue")
-    if not _job_queue and not _current_job:
+    pending_jobs = [j for j in _job_registry.values() if not j.get("cancelled")]
+    if not pending_jobs and not _current_job:
         await query.message.edit("No jobs in queue.", reply_markup=_home_markup())
     else:
         lines   = []
@@ -2165,12 +2270,12 @@ async def cb_queue_cancel(_, query: CallbackQuery):
             done  = sum(1 for e in _current_job["entries"] if e["status"] == "done")
             total = len(_current_job["entries"])
             lines.append(f"▶ **{_trunc(_current_job['chat_title'], 24)}** · {done}/{total}")
-        for i, j in enumerate(_job_queue, 1):
+        for i, j in enumerate(pending_jobs, 1):
             lines.append(f"{i}. **{_trunc(j['chat_title'], 24)}** · {len(j['entries'])} IDs")
             buttons.append([InlineKeyboardButton(
                 f"Cancel Job {i}", callback_data=f"qcancel:{j['job_id']}"
             )])
-        if _job_queue:
+        if pending_jobs:
             buttons.append([InlineKeyboardButton("Cancel All", callback_data="qcancelall")])
         buttons.append([InlineKeyboardButton("🏠 Home", callback_data="home:")])
         try:
@@ -2183,19 +2288,24 @@ async def cb_queue_cancel(_, query: CallbackQuery):
 
 
 async def cb_queue_cancel_all(_, query: CallbackQuery):
-    global _worker_task, _current_job, _job_queue
+    global _worker_task, _current_job
     if not _authorized(query.from_user.id):
         return await query.answer("⛔ Unauthorized.", show_alert=True)
     if _current_job:
         _current_job["cancelled"] = True
     if _worker_task and not _worker_task.done():
         _worker_task.cancel()
-    for j in _job_queue:
+    # PERF-03: mark all registry entries cancelled; drain queue
+    for j in list(_job_registry.values()):
+        j["cancelled"] = True
         for e in j["entries"]:
             e["status"] = "failed"
             e["reason"] = "Cancelled"
         await _edit(j["progress_msg"], "Cancelled")
-    _job_queue.clear()
+    _job_registry.clear()
+    while not _job_queue.empty():
+        try: _job_queue.get_nowait()
+        except asyncio.QueueEmpty: break
     await query.answer("All jobs cancelled")
     await query.message.edit("Queue cleared.", reply_markup=_home_markup())
 
@@ -2236,6 +2346,7 @@ def _scan_folders() -> list[dict]:
     result = []
     if not os.path.exists(DOWNLOAD_BASE):
         return result
+    chat_names = _load_chat_names()                # UX-06: pre-load name cache once
     for folder_id in sorted(os.listdir(DOWNLOAD_BASE)):
         full = os.path.join(DOWNLOAD_BASE, folder_id)
         if not os.path.isdir(full):
@@ -2243,9 +2354,13 @@ def _scan_folders() -> list[dict]:
         try:
             files = [f for f in os.listdir(full) if os.path.isfile(os.path.join(full, f))]
             total = sum(os.path.getsize(os.path.join(full, f)) for f in files)
+            # UX-06: always resolve via _folder_title (tries dialogs_cache first, then file)
+            title = _folder_title(folder_id)
+            if title == f"Chat {folder_id}" and chat_names.get(folder_id):
+                title = chat_names[folder_id]
             result.append({
                 "folder_id":  folder_id,
-                "title":      _folder_title(folder_id),
+                "title":      title,
                 "file_count": len(files),
                 "total_size": total,
                 "path":       full,
@@ -2616,7 +2731,7 @@ async def handle_text(_, message: Message):
         job_id  = uuid4().hex[:8]
 
         if _current_job or (_worker_task and not _worker_task.done()):
-            pos = len(_job_queue) + 1
+            pos = _job_queue.qsize() + 1
             progress_msg = await message.reply(
                 f"Queued  #{pos}  ·  {len(msg_ids)} ID(s)\n"
                 f"{_trunc(chat['title'], 28)}"
@@ -2633,7 +2748,8 @@ async def handle_text(_, message: Message):
                 "cancelled":    False,
                 "total_bytes":  0,
             }
-            _job_queue.append(job)
+            _job_queue.put_nowait(job)            # PERF-03
+            _job_registry[job_id] = job           # PERF-03
             return
 
         progress_msg = await message.reply(
@@ -2666,7 +2782,7 @@ async def handle_text(_, message: Message):
 
 
 async def cb_search_download(_, query: CallbackQuery):
-    global _current_job, _worker_task, _job_queue
+    global _current_job, _worker_task
     uid    = query.from_user.id
     if not _authorized(uid):
         return await query.answer("⛔ Unauthorized.", show_alert=True)
@@ -2706,7 +2822,8 @@ async def cb_search_download(_, query: CallbackQuery):
         "total_bytes":  0,
     }
     if _current_job or (_worker_task and not _worker_task.done()):
-        _job_queue.append(job)
+        _job_queue.put_nowait(job)                 # PERF-03
+        _job_registry[job_id] = job                # PERF-03
     else:
         _current_job = job
         _worker_task = asyncio.create_task(_run_job(job))
@@ -2856,6 +2973,7 @@ async def main() -> None:
     _load_downloaded_ids()
     _load_file_hashes()                            # MOD-34
     _load_job_history()                            # MOD-39
+    _load_unique_ids()                             # PERF-05
 
     # MOD-41: warn on startup if state files were externally modified
     if not _check_state_integrity():
