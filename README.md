@@ -39,17 +39,26 @@ DM your bot, pick a chat from your dialog list, choose a download mode — files
 - 📥 **Download from restricted chats** — channels, groups, bots, DMs
 - 🔢 **Manual ID mode** — send one or more message IDs to download specific files
 - 🔍 **Search by filename** — type a keyword; the bot scans chat history and shows matches as buttons
-- 📦 **Bulk download** — pick a file type (Videos, Audio, Images, Documents, Archives, Apps) and grab everything in the chat history
+- 📦 **Bulk download** — pick a file type (Videos, Audio, Images, Documents, Archives, Apps) and grab everything in the chat history, sorted largest-first for maximum throughput
 - 🗂 **File browser** — browse, receive, or delete downloads right from the chat (`/files`)
 - 📋 **Job queue** — send multiple batches; jobs run one after another automatically, with per-job cancel buttons
-- ⚡ **Live progress** — real-time progress bar with percentage, speed, and ETA per file
+- ⚡ **Live progress** — real-time progress bar with percentage, speed, and calibrated ETA per file
 - 🔁 **Media groups** — handles multi-file posts in a single ID
-- 🛡 **FloodWait handling** — automatic retry on Telegram rate limits
-- 🔍 **Chat filter** — search your dialog list by typing a name
+- 🛡 **Adaptive FloodWait throttle** — per-chat delay that tightens on rate limit hits and relaxes on success
+- 🔍 **Fuzzy chat search** — typo-tolerant dialog filtering with exact-substring priority
+- 🪄 **Magic-byte validation** — automatically detects and corrects wrong file extensions
+- 🔑 **Hash-based deduplication** — BLAKE2b content hash prevents saving the same file twice, even across chats
+- ⚡ **Pre-download deduplication** — checks Telegram's `file_unique_id` before downloading to skip duplicates without touching the network
 - 💾 **Session memory** — last used chat and downloaded IDs are remembered across restarts
 - 🔒 **User whitelist** — restrict bot access to specific Telegram user IDs
-- 📊 **Stats** — uptime, disk, CPU, RAM, network I/O, and total files downloaded on demand
+- 📊 **Stats** — summary view with uptime, storage, and top downloads; tap **More Details** for CPU, RAM, network I/O, and integrity status
 - 📂 **Quick access** — "Open Files" button appears on every completed download
+- ⚠️ **Speed anomaly alerts** — notifies you if download speed drops significantly below the session average
+- 🗺 **Gap detection** — reports the estimated number of deleted messages in a bulk scan
+- 📒 **Per-chat download ledger** — tracks total files, bytes, successes, and failures per source chat
+- 🔏 **Tamper-evident audit log** — HMAC-SHA256 chain records every download action
+- 🔐 **State integrity checking** — SHA-256 fingerprint detects if persistent state files were modified externally
+- 💽 **Disk sentinel** — background monitor that pauses downloads and alerts you when free disk space is critically low
 
 </details>
 
@@ -221,10 +230,15 @@ Open Telegram, find your bot, and send `/start`.
 
 ### Welcome screen
 
-After `/start`, the welcome screen shows the number of loaded chats and queued jobs, plus:
+After `/start`, the welcome screen shows the active chat, number of loaded chats, and queued jobs, plus:
 
 - **▶ Resume** — jump straight back to the last used chat (shown only if a chat was previously selected)
 - **Select Chat** — pick a different source chat from your dialog list
+- **Refresh** — reload your dialog list without restarting
+- **Files** — open the file browser
+- **Stats** — view session statistics
+- **Queue** — see pending jobs
+- **Log** — send the current session log
 - **New Session** — clears the downloaded-IDs history so previously skipped files will be downloaded again
 - **Help** — show the command reference
 
@@ -232,7 +246,7 @@ If a download is already running when you send `/start`, the bot will ask you to
 
 ### Picking a chat
 
-Tap **Select Chat** (or use `/setchat`) to browse your full dialog list. Type part of a name to filter the list, and page through results with ← / →.
+Tap **Select Chat** (or use `/setchat`) to browse your full dialog list. Type part of a name to filter the list with fuzzy matching — typos are tolerated. Page through results with ← / →.
 
 ### Download modes
 
@@ -281,7 +295,9 @@ Pick a file type from the menu:
 | 🗜 Archives | zip, rar, 7z, tar, gz, xz, bz2 |
 | 📱 Apps | apk, xapk, apks |
 
-The bot will scan the entire chat history and download every matching file. A live progress bar shows scanned messages, matched files, bytes downloaded, and elapsed time. A **Cancel Download** button lets you stop at any point.
+A confirmation screen shows the chat name and file type before anything starts. Once confirmed, the bot scans the entire chat history, then downloads every matching file sorted largest-first for maximum throughput. A live progress bar shows scanned messages, matched files, bytes downloaded, and elapsed time. A **Cancel Download** button lets you stop at any point.
+
+After completion, a gap report estimates how many messages appear to have been deleted based on ID gaps in the scan.
 
 </details>
 
@@ -301,13 +317,13 @@ Use `/files` (or tap **📂 Open Files** after any download) to browse your down
 
 | Command | What it does |
 |---|---|
-| `/start` | Reset session, clear queue, pick a new source chat |
+| `/start` | Reset session, clear queue, return to home screen |
 | `/setchat` | Change the source chat without resetting anything else |
 | `/options` | Open the download mode picker for the current chat |
 | `/files` | Browse, receive, or delete downloaded files |
 | `/queue` | Show pending jobs with per-job cancel buttons |
 | `/killall` | Cancel the active download and clear the entire queue |
-| `/stats` | Show uptime, disk usage, CPU, RAM, network I/O, and file count |
+| `/stats` | Summary view: total files, storage, active job, top downloads. Tap **More Details** for CPU, RAM, network I/O, throttle status, and state integrity |
 | `/log` | Send the current session log as a file |
 | `/help` | Show the command reference |
 
@@ -334,6 +350,7 @@ If a file with the same name already exists, it gets a `_1`, `_2` suffix instead
 ```
 GhostFetch/
 ├── main.py              # bot logic, handlers, download engine
+├── db.py                # database initialisation and persistence
 ├── config.py            # loads credentials from .env
 ├── gen_session.py       # one-time session string generator
 ├── requirements.txt
@@ -350,8 +367,12 @@ GhostFetch/
 
 - The session string gives full access to your Telegram account. Keep your `.env` file private and never commit it. The `.gitignore` already excludes it.
 - `TgCrypto` is optional but strongly recommended — it speeds up encryption significantly on all platforms.
-- If you get `FloodWait` errors during large batches, the bot handles them automatically with retries.
+- If you get `FloodWait` errors during large batches, the bot handles them automatically with per-chat adaptive retries.
 - Downloaded IDs are persisted to disk (`downloaded_ids.json`) and survive restarts, so files already fetched are never re-downloaded. To reset this history, tap **New Session** on the welcome screen.
+- File hashes (`file_hashes.json`) and Telegram `file_unique_id` values (`unique_ids.json`) are also persisted, so duplicate detection works correctly across restarts.
+- The audit log (`audit.log`) records every download with a tamper-evident BLAKE2b/HMAC-SHA256 chain. If you configure an `AUDIT_SECRET` in `config.py`, entries are signed with HMAC-SHA256; otherwise a plain SHA-256 chain is used.
+- A state fingerprint (`state.hash`) is written after each save. On startup, GhostFetch checks it and logs a warning if any persistent state file appears to have been modified externally.
+- The disk sentinel runs in the background and pauses active downloads with an alert if free disk space falls below 500 MB.
 - To restrict bot access to specific users, add a list of Telegram user IDs to `ALLOWED_USER_IDS` in `config.py`. An empty list (the default) allows any user to interact with the bot.
 - The bot is optimised for single-user deployments (4 async workers). If you move it to a server with multiple simultaneous users, increase the `workers` value in `main()`.
 - On Windows, if `python` is not recognised in your terminal, try `py` instead, or verify that Python was added to your PATH during installation.
