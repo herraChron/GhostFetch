@@ -193,7 +193,9 @@ Open `.env` with any text editor and fill in your credentials — leave `SESSION
 API_ID=your_api_id_here
 API_HASH=your_api_hash_here
 BOT_TOKEN=your_bot_token_here
+PHONE_NUMBER=+12025550100
 SESSION_STRING=
+ALLOWED_USER_IDS=
 ```
 
 **Quick editor commands by platform:**
@@ -212,7 +214,7 @@ python gen_session.py
 
 > On Linux/macOS you may need to use `python3` instead of `python`.
 
-This will ask for your phone number and a login code, then print a `SESSION_STRING`. Copy it and paste it into the `SESSION_STRING=` line in your `.env` file, then save.
+This will use the `PHONE_NUMBER` from your `.env` file (or prompt you if it's not set), ask for the login code Telegram sends you, then print a `SESSION_STRING`. Copy it and paste it into the `SESSION_STRING=` line in your `.env` file, then save.
 
 ### 7. Run
 
@@ -354,7 +356,7 @@ GhostFetch/
 ├── config.py            # loads credentials from .env
 ├── gen_session.py       # one-time session string generator
 ├── requirements.txt
-├── .env.example         # credential template
+├── .env.template        # credential template
 └── .gitignore
 ```
 
@@ -373,7 +375,7 @@ GhostFetch/
 - The audit log (`audit.log`) records every download with a tamper-evident BLAKE2b/HMAC-SHA256 chain. If you configure an `AUDIT_SECRET` in `config.py`, entries are signed with HMAC-SHA256; otherwise a plain SHA-256 chain is used.
 - A state fingerprint (`state.hash`) is written after each save. On startup, GhostFetch checks it and logs a warning if any persistent state file appears to have been modified externally.
 - The disk sentinel runs in the background and pauses active downloads with an alert if free disk space falls below 500 MB.
-- To restrict bot access to specific users, add a list of Telegram user IDs to `ALLOWED_USER_IDS` in `config.py`. An empty list (the default) allows any user to interact with the bot.
+- To restrict bot access to specific users, add a comma-separated list of Telegram user IDs to `ALLOWED_USER_IDS` in your `.env` file. An empty value (the default) allows any user to interact with the bot.
 - The bot is optimised for single-user deployments (4 async workers). If you move it to a server with multiple simultaneous users, increase the `workers` value in `main()`.
 - On Windows, if `python` is not recognised in your terminal, try `py` instead, or verify that Python was added to your PATH during installation.
 
