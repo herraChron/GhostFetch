@@ -18,3 +18,17 @@ downloads/
 .idea/
 .DS_Store
 Thumbs.db
+*.db
+*.pkl
+*.bak
+api_tokens.json
+downloaded_ids.json
+file_hashes.json
+unique_ids.json
+favorites.json
+history.json
+job_history.json
+ledger.json
+chat_names.json
+path.json
+[0-9]*/

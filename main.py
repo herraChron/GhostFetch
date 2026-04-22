@@ -2,6 +2,7 @@
 # herraChron
 # Updated: MOD-01 through MOD-45 + FIX-01–06, PERF-02/06/07, SEC-01/03/04, ARCH-02/03, UX-01–10
 
+import db as _db
 import os
 import json
 import shutil
@@ -2903,6 +2904,8 @@ async def _set_bot_commands() -> None:
 
 async def main() -> None:
     global bot, user_client, _disk_sentinel_task
+    
+    await _db.init_db()    
 
     bot = Client(
         "bot_session",
