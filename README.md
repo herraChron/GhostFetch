@@ -2,6 +2,8 @@
 
 # 👻 GhostFetch
 
+![GhostFetch](assets/GhostLogo.png)
+
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat&logo=python&logoColor=white)](https://python.org)
 [![Pyrogram](https://img.shields.io/badge/Pyrogram-2.x-009DFF?style=flat&logo=telegram&logoColor=white)](https://docs.pyrogram.org)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20Termux-0078D6?style=flat&logo=windows&logoColor=white)](https://github.com/herraChron/GhostFetch)
